@@ -144,28 +144,38 @@ server cmd/serve.go (local provider only; D6)
 
 ---
 
-## Implementation plan
-- **Part 1 — Go (done, to be hardened):** explicit `/postlocal` validation + handler hardening (D6).
-- **Part 2 — `crop-engine.js`:** transform-only module + the matrix + tests (D3/D7/D9).
-- **Part 3 — shell:** rewire `media.svelte` / `file_upload.svelte` to call `transformImage` and persist via the provider pipeline (D5); strip the ~96 debug logs; fix the object-field binding; resolve eager-vs-deferred write.
+**D10 — Auto-process on field update (the #364 behaviour).** The primary trigger is **selecting/uploading a new image into a schema-configured media field**, not a manual button:
+- no image options → assign the path (unchanged);
+- `crop:true` → auto-open the crop modal on the new source (cancel reverts to the previous value — an uncropped large image must not be left in a crop:true field);
+- `crop:false` → auto-optimise immediately (contain/convert), no modal;
+- a failed transform keeps the previous field value + shows an inline error.
+The manual Crop/Optimise button remains as a re-process surface. **Direct Media-Library crop (cropping an arbitrary library image with no field/schema context) is a separate, secondary enhancement** — it can't know which field's dimensions/format to enforce.
 
-### Acceptance criteria — "prove its worth locally" (before any PR)
-1. End-to-end: crop in CMS → optimised file written to `media/` via the provider → content JSON updates → page renders it.
-2. Does the #364 job: scales to schema `width`/`height` **and** converts to webp.
-3. **The proof for Jim:** a 5,000 px JPEG through `{width:500, convert:"webp"}` — record the **before/after byte size** (`transformImage` returns `bytes`).
-4. No regressions to normal media fields, uploads, or the rest of the CMS.
+## Implementation plan (all committed on `feat/image-crop`)
+- **Server (`cmd/serve.go`):** explicit `/postlocal` validation (mirrors `media_checker.js`) + handler hardening (D6).
+- **`crop-engine.js`:** transform-only module + the matrix + dependency-free tests (D3/D7/D9).
+- **Deferred-persistence foundation:** `providers/commit.js` (shared dispatch), per-item action/encoding in all providers, `pending_media.js` store, Button `beforeSubmit` merge (D5).
+- **Field integration:** `image_crop_modal.svelte` + `media.svelte` (schema resolution, source-path distinction, object dual-format, preview persistence) + `media_checker.js` guard.
+- **Auto-process on update (D10).**
+
+### Acceptance — verified in a clean fixture site (browser + disk)
+1. ✅ Select a 5000px JPEG into `crop:true` `hero_string` → modal **auto-opens** on that source; confirm → derivative + content committed in **one** provider commit. Byte proof: 5000px JPEG → 500×300 WebP = **98.8%** (388,409 → 4,862 b).
+2. ✅ Select it into `crop:false` `banner_contain` → **auto 500×300 derivative, no modal** = **97.7%** (388,409 → 9,110 b, jpg preserved — no `convert`).
+3. ✅ Object media: `src` updated, `alt` preserved; re-crop uses the **original** source + replaces (no duplicate); GIF flattens to a still webp; cancel reverts; ordinary fields unchanged.
+4. ✅ Engine unit tests (22) + `/postlocal` curl matrix all green.
 
 ---
 
 ## Interaction with #375
-#375 (CMS auth/token/endpoint overrides) touches the remote-commit/auth area; this feature's server change is **local-provider-only**, so they are largely orthogonal. `feat/image-crop` branches off `master` (no #375), and rebases as upstream lands. Both PRs gate on Jim's review, so the crop PR should arrive **already proven locally** with the byte-size win front-and-centre.
+#375 (CMS auth/token/endpoint overrides) touches the remote-commit/auth area; this feature's server change is **local-provider-only**, so they are largely orthogonal. `feat/image-crop` branches off `master` (no #375), and rebases as upstream lands.
 
 ---
 
 ## Status of work so far
-- ✅ Diagnosed the v0.7.21 break; root-caused to publish refactor + `file-path` validator.
-- ✅ Migrated the local site to build/serve on v0.7.21.
-- ✅ Part 1: extended `/postlocal` to allow media writes; curl-verified (media 200, arbitrary/traversal 400, content 200). **To be hardened per D6 (explicit validation + handler fixes).**
-- ✅ Investigated Pico/Pattr; confirmed the transformation-module boundary (D3/D4).
-- ✅ Wrote `crop-engine.js` v1; review found a critical `null`-selection bug + transport-coupling — reworking to transform-only (D5) with the matrix + full test suite.
-- ⏳ Next: rework module + harden server + fix `providers/local.js`, then Part 3 shell.
+Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `crop-engine.js` + tests → `providers/local.js` fix → deferred-persistence foundation → field-crop modal integration → auto-process-on-update.
+
+**Remaining before a PR:**
+- ⏳ GitLab/Gitea dispatch is **code-verified only** (per-item `?? action` fallback preserves existing behaviour); exercise the real remote provider path before claiming it in the PR.
+- ⏳ Schema shape (`options[]` vs `crop{}`) — settle with Jim (the parser accepts both today).
+- ⏳ Optional follow-up: direct Media-Library crop controls (D10).
+- ⏳ Decide whether JS engine/store tests live in-repo and how they run in CI.
