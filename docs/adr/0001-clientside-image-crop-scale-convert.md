@@ -178,15 +178,24 @@ The manual Crop/Optimise button remains as a re-process surface. **Direct Media-
 ---
 
 ## Status of work so far
-Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `crop-engine.js` + tests → `providers/local.js` fix → deferred-persistence foundation → field-crop modal integration → auto-process-on-update → **field-scoped upload pre-processing**.
+Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `crop-engine.js` + tests → `providers/local.js` fix → deferred-persistence foundation → field-crop modal integration → auto-process-on-update → field-scoped upload pre-processing → **remote-provider upsert + Gitea media-first ordering + provider contract tests (D11)**.
 
-The select **and** upload paths into a configured field now process the image before it is saved to the repository.
+The select **and** upload paths into a configured field now process the image before it is saved to the repository, and the local, GitLab, and Gitea commit contracts are covered by `scripts/test-providers.mjs`.
 
 **Remaining before a PR:**
-- ⏳ **Exercise the real GitLab/Gitea path** (library pick + fresh upload). The per-item `action`/`encoding` dispatch is code-verified correct, but a code-trace of `providers/{gitlab,gitea}.js` found two remote-only gaps the local provider hides (it just overwrites):
-  - **Media `create` vs `update` on an existing path.** `pendingMedia.toCommitItems()` always emits `action:'create'`. A NEW derivative path commits fine. But re-deriving the *same* filename in a *later* session (same source + same target dims, after a prior commit) collides: GitLab rejects the atomic commit ("file already exists"), Gitea's POST returns 422. Within a session the `committed` flag stops re-sending, so this only bites cross-session. Fix: upsert media (detect existence → `update`, or treat media create as create-or-replace).
-  - **Gitea is non-atomic.** Its contents API is per-file, so a mixed save is N sequential commits, not one. With the current order `[content, …media]`, if a media commit fails the content (referencing the missing derivative) is already committed → broken page. Fix for sequential providers: commit media **before** content. GitLab (single `actions[]` commit) and local are unaffected.
-  - A live remote (the user's repo + token) or a mock-API harness is needed to validate end-to-end; both fixes should land with that validation.
+- ✅ **Remote-provider gaps CLOSED (D11 below).** The two remote-only gaps a code-trace found (the local provider hid them by overwriting) are fixed and covered by committed fetch-level contract tests — see **D11**. A live remote smoke test remains desirable *confirmation*, not the primary proof.
 - ⏳ Schema shape (`options[]` vs `crop{}`) — settle with Jim (the parser accepts both today).
 - ⏳ Optional follow-up: direct Media-Library crop controls (D10).
-- ⏳ Decide whether JS engine/store tests live in-repo and how they run in CI.
+- ✅ **JS test location/CI decided** — follow the existing `scripts/test-crop-engine.mjs` convention: dependency-free `.mjs` under `scripts/`, run with `node scripts/<name>.mjs` (no framework, no `package.json`). Provider tests added as `scripts/test-providers.mjs`. (How these wire into CI is for the maintainer; locally they are `node`-runnable.)
+
+---
+
+**D11 — Remote commit gaps closed: provider-neutral `upsert` + Gitea media-first ordering.** The mixed content+media commit model (D5) exposed two correctness gaps on the *remote* providers (local hides them by overwriting). Both are now fixed in `feat/image-crop`, verified by `scripts/test-providers.mjs` (18 fetch-level cases):
+
+- **Gap 1 — media `create` vs `update` on an existing path.** `pendingMedia.toCommitItems()` previously hardcoded `action:'create'`; re-deriving the *same* filename in a *later* session collided (GitLab rejected the atomic commit; Gitea POST 422). **Fix:** `toCommitItems()` now emits a provider-neutral **`action:'upsert'`** that each provider resolves against the live repo — it is never sent to a remote API verbatim:
+  - **GitLab** — `HEAD` the file path → `404` = `create`, `200` = `update` (+ the `X-Gitlab-Last-Commit-Id` the batch Commit API requires for updates). All upserts resolve *before* the single commit, so it **stays one atomic request** (all-or-nothing). Any non-404 metadata status (auth/permission/server) **aborts** — never treated as "absent".
+  - **Gitea** — `GET` the file → `200` = `update` (use the returned `sha`), `404` = `create`. Non-404 aborts. (Reuses the GET-for-sha the provider already did for content updates.)
+  - **Local** — maps `upsert`→`create` on the wire (the `/postlocal` write overwrites; the server validator only knows create/update/delete).
+- **Gap 2 — Gitea is non-atomic.** Its contents API is per-file, so a mixed save is N sequential commits. **Fix:** commit **media (the upserts) before content** — if a media write fails the loop aborts before the content (which references that derivative) is written. GitLab (single `actions[]` commit) and local are unaffected.
+- **Accepted residual limitation (documented):** on Gitea, if media succeeds but the *content* write then fails, an **orphan derivative** can remain in `media/`. This is clearly safer than the inverse (content pointing at a missing image) and matches Gitea's existing always-sequential commit behaviour — no new failure mode is introduced.
+- **Deferred (separate provider-wide work, NOT this PR):** migrating the whole Gitea provider to its **multi-file commit API** (`/contents` batch with `operation:"upload"`) would make Gitea commits atomic like GitLab's. That benefits *every* Gitea commit, not just image-crop, and changes the provider's commit model + needs compatibility detection + a fallback — so it belongs in its own provider-focused issue/PR. Recorded here so it isn't lost.
