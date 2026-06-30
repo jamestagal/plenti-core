@@ -183,7 +183,10 @@ Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `cro
 The select **and** upload paths into a configured field now process the image before it is saved to the repository.
 
 **Remaining before a PR:**
-- ⏳ GitLab/Gitea dispatch is **code-verified only** (per-item `?? action` fallback preserves existing behaviour); exercise the real remote provider path — for both a library pick and a fresh upload — before claiming it in the PR.
+- ⏳ **Exercise the real GitLab/Gitea path** (library pick + fresh upload). The per-item `action`/`encoding` dispatch is code-verified correct, but a code-trace of `providers/{gitlab,gitea}.js` found two remote-only gaps the local provider hides (it just overwrites):
+  - **Media `create` vs `update` on an existing path.** `pendingMedia.toCommitItems()` always emits `action:'create'`. A NEW derivative path commits fine. But re-deriving the *same* filename in a *later* session (same source + same target dims, after a prior commit) collides: GitLab rejects the atomic commit ("file already exists"), Gitea's POST returns 422. Within a session the `committed` flag stops re-sending, so this only bites cross-session. Fix: upsert media (detect existence → `update`, or treat media create as create-or-replace).
+  - **Gitea is non-atomic.** Its contents API is per-file, so a mixed save is N sequential commits, not one. With the current order `[content, …media]`, if a media commit fails the content (referencing the missing derivative) is already committed → broken page. Fix for sequential providers: commit media **before** content. GitLab (single `actions[]` commit) and local are unaffected.
+  - A live remote (the user's repo + token) or a mock-API harness is needed to validate end-to-end; both fixes should land with that validation.
 - ⏳ Schema shape (`options[]` vs `crop{}`) — settle with Jim (the parser accepts both today).
 - ⏳ Optional follow-up: direct Media-Library crop controls (D10).
 - ⏳ Decide whether JS engine/store tests live in-repo and how they run in CI.
