@@ -25,7 +25,7 @@
     function setFieldSrc(newSrc) {
         field = (field && typeof field === 'object') ? { ...field, src: newSrc } : newSrc;
     }
-    $: canCrop = !!imageOptions && isImagePath(fieldSrc);
+    $: canReprocess = !!imageOptions && isImagePath(fieldSrc);
     // Show a pending derivative's in-memory preview until it's saved to disk.
     $: displaySrc = ($pendingMedia, pendingMedia.previewUrl(fieldSrc)) || fieldSrc;
 
@@ -33,11 +33,52 @@
     let cropSourceUrl = '';
     let cropError = '';
     let processing = false;
+    let cropRevertTo;   // value to restore if an auto-opened crop is cancelled
+
+    function cancelCrop() {
+        showCropModal = false;
+        if (cropRevertTo !== undefined) {
+            field = cropRevertTo;        // a cancelled auto-crop keeps the previous image
+            cropRevertTo = undefined;
+        }
+    }
+
+    function loadImage(src) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Could not load the source image.'));
+            img.src = src;
+        });
+    }
+
+    // #364 core: when a NEW image is selected/uploaded into this field, enforce
+    // the field's schema automatically — crop:true opens the modal, crop:false
+    // optimises immediately, no options just assigns.
+    let lastHandled;
+    $: if (changingMedia && field === originalMedia && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
+        lastHandled = changingMedia;
+        handleNewSelection(changingMedia);
+    }
+    function handleNewSelection(newPath) {
+        if (!imageOptions || !isImagePath(newPath)) {
+            setFieldSrc(newPath);                      // ordinary field / non-image
+        } else if (imageOptions.crop !== false) {
+            cropRevertTo = field;                      // restore this if the crop is cancelled
+            setFieldSrc(newPath);                      // candidate; modal enforces the crop
+            // Use newPath directly — fieldSrc hasn't reactively updated yet.
+            cropSourceUrl = pendingMedia.sourceOf(newPath) ?? newPath;
+            cropError = '';
+            showCropModal = true;
+        } else {
+            autoOptimise(newPath);                     // crop:false -> optimise now
+        }
+    }
 
     function openCrop() {
         cropError = '';
-        // Re-crop from the ORIGINAL source (within this session), never a prior
-        // compressed derivative.
+        cropRevertTo = undefined;                       // manual re-crop: cancel keeps current
+        // Re-crop/optimise from the ORIGINAL source (within this session).
         cropSourceUrl = pendingMedia.sourceOf(fieldSrc) ?? fieldSrc;
         showCropModal = true;
     }
@@ -48,10 +89,9 @@
         try {
             const { image, selection } = e.detail;
             const result = await transformImage(image, selection, imageOptions, cropSourceUrl);
-            // Only after BOTH the transform and the queue succeed do we touch the
-            // field — a failure leaves field, selection, and pending untouched.
             pendingMedia.add(result.filePath, result.blob, cropSourceUrl);
             setFieldSrc(result.filePath);
+            cropRevertTo = undefined;
             showCropModal = false;
         } catch (error) {
             cropError = error instanceof Error ? error.message : 'The image could not be processed.';
@@ -60,17 +100,32 @@
         }
     }
 
-    // --- existing media-swap behaviour, made format-preserving ---
+    // crop:false automatic optimisation (contain/convert), no modal. Keeps the
+    // previous field value untouched if the transform fails.
+    async function autoOptimise(newPath) {
+        if (processing) return;
+        const previous = field;
+        processing = true;
+        cropError = '';
+        try {
+            const image = await loadImage(newPath);
+            const result = await transformImage(image, null, imageOptions, newPath);
+            pendingMedia.add(result.filePath, result.blob, newPath);
+            setFieldSrc(result.filePath);
+        } catch (error) {
+            field = previous;
+            cropError = error instanceof Error ? error.message : 'The image could not be processed.';
+        } finally {
+            processing = false;
+        }
+    }
+
+    // --- existing media-swap entry point ---
     let originalMedia;
     const swapMedia = () => {
         originalMedia = field;
         changingMedia = fieldSrc;
         showMediaModal = true;
-    }
-    $: if (changingMedia) {
-        if (field === originalMedia && changingMedia !== fieldSrc) {
-            setFieldSrc(changingMedia);
-        }
     }
 
     // If an img path is 404, load the data image instead
@@ -94,10 +149,16 @@
         <embed src="{displaySrc}" class="thumbnail" />
     {/if}
     <button class="swap" on:click|preventDefault={swapMedia}>Change Media</button>
-    {#if canCrop}
+    {#if canReprocess}
         <button class="crop" on:click|preventDefault={openCrop}>{imageOptions.crop !== false ? 'Crop' : 'Optimise'}</button>
     {/if}
+    {#if processing && !showCropModal}
+        <div class="processing">Optimising…</div>
+    {/if}
 </div>
+{#if cropError && !showCropModal}
+    <div class="field-error">⚠️ {cropError}</div>
+{/if}
 
 {#if showCropModal}
     <ImageCropModal
@@ -106,7 +167,7 @@
         error={cropError}
         {processing}
         on:confirm={onCropConfirm}
-        on:cancel={() => showCropModal = false}
+        on:cancel={cancelCrop}
     />
 {/if}
 
@@ -150,5 +211,20 @@
     }
     button.crop:hover {
         background-color: #15679f;
+    }
+    .processing {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, .6);
+        color: white;
+        font-weight: bold;
+    }
+    .field-error {
+        color: darkred;
+        font-size: .85rem;
+        margin-top: 4px;
     }
 </style>
