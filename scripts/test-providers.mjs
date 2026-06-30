@@ -45,6 +45,13 @@ const fakeUser = {
     subscribe(fn) { fn({ isAuthenticated: true, tokens: { access_token: 'tok' } }); return () => {}; },
 };
 
+// --- a shadowContent spy that counts the commit-level success/delete callbacks,
+//     so we can assert onSave fires once per *commit*, never per file ---
+const spyShadow = () => {
+    const counts = { saves: 0, deletes: 0 };
+    return { sc: { onSave: () => { counts.saves++; }, onDelete: () => { counts.deletes++; } }, counts };
+};
+
 // --- a scripted fetch: each call consumes the next handler from a queue, and
 //     every request is recorded for assertions ---
 function scriptFetch(handlers) {
@@ -185,6 +192,74 @@ console.log('=== Gitea (sequential per-file; upsert via GET; media before conten
     ]);
     await commitGitea([{ file: 'page.json', encoding: 'text', contents: '{}' }], null, 'update', 'text', fakeUser);
     eq('explicit update unchanged (PUT with sha)', calls.find(c => c.method === 'PUT')?.body.sha, 'aaa');
+
+    // onSave is a COMMIT-level signal: it must fire once after every file commits,
+    // never per file — otherwise media-first ordering would signal "saved" before a
+    // failing content write, breaking the retryable guarantee.
+    // (1) multi-item success → onSave exactly once
+    {
+        const { sc, counts } = spyShadow();
+        scriptFetch([
+            () => res(200, { json: { login: 'u' } }),       // GET /user
+            () => res(404),                                 // GET media (absent → create)
+            () => res(201, { json: {} }),                   // POST media
+            () => res(200, { json: { sha: 'c0ffee' } }),    // GET content sha
+            () => res(200, { json: {} }),                   // PUT content
+        ]);
+        await commitGitea(
+            [{ file: 'page.json', action: 'update', encoding: 'text', contents: '{}' },
+             { file: 'media/a.webp', action: 'upsert', encoding: 'base64', contents: 'data:image/webp;base64,AAAA' }],
+            sc, 'update', 'text', fakeUser,
+        );
+        eq('multi-item success → onSave called exactly once', counts.saves, 1);
+    }
+    // (2) media failure → onSave zero times
+    {
+        const { sc, counts } = spyShadow();
+        scriptFetch([
+            () => res(200, { json: { login: 'u' } }),       // GET /user
+            () => res(404),                                 // GET media (create)
+            () => res(422, { json: { message: 'boom' } }),  // POST media FAILS
+        ]);
+        try {
+            await commitGitea(
+                [{ file: 'page.json', action: 'update', encoding: 'text', contents: '{}' },
+                 { file: 'media/a.webp', action: 'upsert', encoding: 'base64', contents: 'data:,AAAA' }],
+                sc, 'update', 'text', fakeUser,
+            );
+        } catch { /* expected */ }
+        eq('media failure → onSave never called', counts.saves, 0);
+    }
+    // (3) content failure AFTER successful media → onSave zero times (retryable)
+    {
+        const { sc, counts } = spyShadow();
+        scriptFetch([
+            () => res(200, { json: { login: 'u' } }),       // GET /user
+            () => res(404),                                 // GET media (create)
+            () => res(201, { json: {} }),                   // POST media OK
+            () => res(200, { json: { sha: 'c0ffee' } }),    // GET content sha
+            () => res(500, { json: { message: 'server' } }),// PUT content FAILS
+        ]);
+        try {
+            await commitGitea(
+                [{ file: 'page.json', action: 'update', encoding: 'text', contents: '{}' },
+                 { file: 'media/a.webp', action: 'upsert', encoding: 'base64', contents: 'data:,AAAA' }],
+                sc, 'update', 'text', fakeUser,
+            );
+        } catch { /* expected */ }
+        eq('content failure after successful media → onSave never called', counts.saves, 0);
+    }
+    // (4) single-item content save unchanged → onSave exactly once
+    {
+        const { sc, counts } = spyShadow();
+        scriptFetch([
+            () => res(200, { json: { login: 'u' } }),       // GET /user
+            () => res(200, { json: { sha: 'aaa' } }),       // GET content sha
+            () => res(200, { json: {} }),                   // PUT content
+        ]);
+        await commitGitea([{ file: 'page.json', action: 'update', encoding: 'text', contents: '{}' }], sc, 'update', 'text', fakeUser);
+        eq('single-item save → onSave called exactly once', counts.saves, 1);
+    }
 }
 
 // ─────────────────────────── Local ───────────────────────────

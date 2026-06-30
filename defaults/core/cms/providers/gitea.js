@@ -127,28 +127,34 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
             headers,
             body: JSON.stringify(payload),
         });
-        if (response.ok) {
-            if (action === 'create' || action === 'update') {
-                shadowContent?.onSave?.();
-                // Make sure saving single content file, not list of media items
-                if (commitList.length === 1 && commitList[0].file.lastIndexOf('.json') > 0) {
-                    let evaluatedRoute = evaluateRoute(commitList[0]);
-                    // Redirect only if new route is being created
-                    if (normalizeRoute(evaluatedRoute) !== normalizeRoute(location.pathname)) {
-                        history.pushState({
-                            isNew: true,
-                            route: evaluatedRoute
-                        }, '', evaluatedRoute);
-                    }
-                }
-            }
-            if (action === 'delete') {
-                shadowContent?.onDelete?.();
-                history.pushState(null, '', env.baseurl && !env.local ? env.baseurl : '/');
-            }
-        } else {
+        // Per-file failure aborts the whole save BEFORE any success signal. With
+        // media ordered first, this never leaves content pointing at a missing
+        // derivative, and the UI is never told "saved" for a partial write.
+        if (!response.ok) {
             const { error, message } = await response.json();
             throw new Error(`Publish failed: ${error || message}`);
         }
-    };
+    }
+
+    // Commit-level success only — fire AFTER every file in the sequential save has
+    // committed. Calling onSave per item would signal success after the media write
+    // but before a failing content write, contradicting the retryable guarantee.
+    if (action === 'create' || action === 'update') {
+        shadowContent?.onSave?.();
+        // Make sure saving single content file, not list of media items
+        if (commitList.length === 1 && commitList[0].file.lastIndexOf('.json') > 0) {
+            let evaluatedRoute = evaluateRoute(commitList[0]);
+            // Redirect only if new route is being created
+            if (normalizeRoute(evaluatedRoute) !== normalizeRoute(location.pathname)) {
+                history.pushState({
+                    isNew: true,
+                    route: evaluatedRoute
+                }, '', evaluatedRoute);
+            }
+        }
+    }
+    if (action === 'delete') {
+        shadowContent?.onDelete?.();
+        history.pushState(null, '', env.baseurl && !env.local ? env.baseurl : '/');
+    }
 }
