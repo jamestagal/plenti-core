@@ -1,27 +1,20 @@
 <script>
-    import { commitGitlab } from './providers/gitlab.js';
-    import { commitGitea } from './providers/gitea.js';
-    import { postLocal } from './providers/local.js';
-    import { env } from '../../generated/env.js';
+    import { commit } from './providers/commit.js';
     import { findFileReferences } from './file_references.js';
 
-    export let commitList, shadowContent, buttonText, action, encoding, user, afterSubmit, status;
+    export let commitList, shadowContent, buttonText, action, encoding, user, afterSubmit, beforeSubmit, status;
     export let buttonStyle = "primary";
-    const local = env.local ?? false;
-    const provider = env.cms.provider.toLowerCase();
 
     let confirmTooltip;
     const onSubmit = async () => {
         confirmTooltip = false;
         status = "sending";
         try {
-            if (local) {
-                await postLocal(commitList, shadowContent, action, encoding, user);
-            } else if (!provider || provider === "gitlab") {
-                await commitGitlab(commitList, shadowContent, action, encoding, user);
-            } else if (provider === "gitea" || provider === "forgejo") {
-                await commitGitea(commitList, shadowContent, action, encoding, user);
-            }
+            // beforeSubmit returns EXTRA commit items (e.g. cropped derivatives) to
+            // merge into ONE atomic provider commit; it must not commit itself, and
+            // may throw to abort the save cleanly (leaving editor + pending intact).
+            const extraChanges = (await beforeSubmit?.()) ?? [];
+            await commit([...commitList, ...extraChanges], shadowContent, action, encoding, user);
             status = "sent";
             afterSubmit?.();
             resetStatus();

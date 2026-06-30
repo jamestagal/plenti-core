@@ -53,11 +53,15 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
     });
 
     for (const commitItem of commitList) {
+        // Per-item action/encoding (falling back to the call-level values) so a
+        // single save can mix content (update/text) and media (create/base64).
+        const itemAction = commitItem.action ?? action;
+        const itemEncoding = commitItem.encoding ?? encoding;
         const url = `${apiBaseUrl}/repos/${owner}/${repo}/contents/` + commitItem.file;
 
         const makeDataStr = base64Str => base64Str.split(',')[1];
-        let message = capitalizeFirstLetter(action) + ' ' + (commitList.length > 1 ? commitList.length + ' files' : commitList[0].file);
-        let content = encoding === "base64" ? makeDataStr(commitItem.contents) : btoa(unescape(encodeURIComponent(commitItem.contents)));
+        let message = capitalizeFirstLetter(itemAction) + ' ' + (commitList.length > 1 ? commitList.length + ' files' : commitList[0].file);
+        let content = itemEncoding === "base64" ? makeDataStr(commitItem.contents) : btoa(unescape(encodeURIComponent(commitItem.contents)));
 
         const payload = {
             author: {
@@ -69,7 +73,7 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
             content: content,
         };
 
-        if (action === 'update' || action === 'delete') {
+        if (itemAction === 'update' || itemAction === 'delete') {
             // Get details about existing file from Gitea
             await fetch(url, {
                 method: 'GET',
@@ -82,7 +86,7 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
             });
         }
 
-        let method = action === 'create' ? 'POST' : action === 'update' ? 'PUT' : action === 'delete' ? 'DELETE' : '';
+        let method = itemAction === 'create' ? 'POST' : itemAction === 'update' ? 'PUT' : itemAction === 'delete' ? 'DELETE' : '';
 
         const response = await fetch(url, {
             method: method,

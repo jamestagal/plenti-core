@@ -10,11 +10,15 @@ export async function postLocal(commitList, shadowContent, action, encoding) {
     const makeDataStr = base64Str => base64Str.split(',')[1];
     let body = [];
     commitList.forEach(commitItem => {
+        // Per-item action/encoding (falling back to the call-level values) so one
+        // commit can mix content (update/text) and media derivatives (create/base64).
+        const itemAction = commitItem.action ?? action;
+        const itemEncoding = commitItem.encoding ?? encoding;
         body.push({
-            action, action,
-            encoding: encoding,
+            action: itemAction,
+            encoding: itemEncoding,
             file: commitItem.file,
-            contents: encoding === "base64" ? makeDataStr(commitItem.contents) : commitItem.contents
+            contents: itemEncoding === "base64" ? makeDataStr(commitItem.contents) : commitItem.contents
         });
     });
     const response = await fetch(url, {

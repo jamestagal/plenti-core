@@ -42,11 +42,15 @@ export async function commitGitlab(commitList, shadowContent, action, encoding, 
 
     let actions = [];
     commitList.forEach(commitItem => {
+        // Per-item action/encoding (falling back to the call-level values) so one
+        // atomic commit can mix content (update/text) and media (create/base64).
+        const itemAction = commitItem.action ?? action;
+        const itemEncoding = commitItem.encoding ?? encoding;
         actions.push({
-            action: action,
+            action: itemAction,
             file_path: commitItem.file,
-            encoding: encoding,
-            content: encoding === "base64" ? makeDataStr(commitItem.contents) : commitItem.contents,
+            encoding: itemEncoding,
+            content: itemEncoding === "base64" ? makeDataStr(commitItem.contents) : commitItem.contents,
         });
     });
 

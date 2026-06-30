@@ -4,8 +4,17 @@
     import ButtonWrapper from './button_wrapper.svelte';
     import Button from './button.svelte';
     import schemas from '../../generated/schemas.js';
+    import { pendingMedia } from './pending_media.js';
 
     $: schema = schemas[content.type];
+
+    // Discard any unsaved crop derivatives when the edited page changes (or the
+    // editor first loads) — deferred crops belong to a single editing session.
+    let lastFilepath;
+    $: if (content.filepath !== lastFilepath) {
+        lastFilepath = content.filepath;
+        pendingMedia.clear();
+    }
 
     let missingRequired = [];
 </script>
@@ -71,6 +80,8 @@
                 buttonText="Save"
                 action={content.isNew ? 'create' : 'update'}
                 encoding="text"
+                beforeSubmit={() => pendingMedia.toCommitItems()}
+                afterSubmit={() => pendingMedia.clear()}
                 {user}
             />
             <Button
