@@ -1,36 +1,84 @@
 import { writable, get } from 'svelte/store';
 import { blobToDataURL } from './crop-engine.js';
 
-// Image derivatives produced by the crop engine, held IN MEMORY as Blobs until
-// the page is saved (deferred persistence). Nothing is written until the
-// page-save commit; cancelling the edit discards these. Blobs (not data URLs)
-// are kept so the larger base64 isn't carried through UI state — conversion to
-// a data URL happens only in toCommitItems(), at payload-build time.
+// Image derivatives from the crop engine, held IN MEMORY as Blobs (deferred
+// persistence). Nothing is written until the page-save commit; cancelling the
+// edit discards these. Blobs (not data URLs) are kept so the larger base64 isn't
+// carried through UI state — conversion happens only in toCommitItems().
+//
+// Each entry keeps an object URL for in-editor preview and remembers the
+// ORIGINAL sourcePath so re-cropping transforms the original, not the
+// already-compressed derivative.
+//
+// Two lifecycles share one store:
+//   - commit:  toCommitItems() returns entries not yet committed; a successful
+//              page save calls markCommitted() so they aren't re-committed.
+//   - preview: entries (and their object URLs / sourcePath) survive markCommitted
+//              so the thumbnail keeps showing the just-saved derivative until the
+//              page reloads (Plenti serves the written file from media/, but the
+//              freshly-written path can race the <img> at save time). clear()
+//              ends the editing session (page change / cancel): revoke + drop.
+//
+// PROVENANCE BOUNDARY: sourceOf() spans the current editing session only. After
+// a reload the field holds just the derivative path, so a later re-crop uses
+// that derivative. Persistent cross-session provenance is future work.
 function createPendingMedia() {
-    const store = writable([]); // [{ file, blob, action }]
-    const { subscribe, set, update } = store;
+    const store = writable([]); // [{ file, blob, sourcePath, url, committed }]
+    const { subscribe, update } = store;
+
+    const revoke = item => { if (item && item.url) URL.revokeObjectURL(item.url); };
+
     return {
         subscribe,
-        // Add or REPLACE a derivative, deduped by output path so re-cropping the
-        // same target replaces the pending item rather than adding a duplicate.
-        add(file, blob, action = 'create') {
-            update(list => [...list.filter(item => item.file !== file), { file, blob, action }]);
+        // Add or REPLACE a derivative, deduped by output path: re-cropping the
+        // same target replaces the blob (revoking the previous preview URL) and
+        // keeps the original sourcePath.
+        add(file, blob, sourcePath) {
+            update(list => {
+                const existing = list.find(i => i.file === file);
+                if (existing) revoke(existing);
+                return [
+                    ...list.filter(i => i.file !== file),
+                    { file, blob, sourcePath, url: URL.createObjectURL(blob), committed: false },
+                ];
+            });
         },
         remove(file) {
-            update(list => list.filter(item => item.file !== file));
+            update(list => {
+                const item = list.find(i => i.file === file);
+                if (item) revoke(item);
+                return list.filter(i => i.file !== file);
+            });
         },
+        // After a successful page save: stop re-committing these, but keep their
+        // previews so the thumbnail stays correct until the page reloads.
+        markCommitted() {
+            update(list => list.map(i => ({ ...i, committed: true })));
+        },
+        // End of the editing session (page change / cancel): revoke + drop all.
         clear() {
-            set([]);
+            update(list => { list.forEach(revoke); return []; });
         },
-        // Commit items for the page-save payload — Blob -> base64 data URL HERE,
-        // not while editing. Each item carries its own action/encoding so it
+        // Original source for a derivative path (session-scoped).
+        sourceOf(file) {
+            const item = get(store).find(i => i.file === file);
+            return item ? item.sourcePath : null;
+        },
+        // Object URL for previewing a derivative that may not be reliably served
+        // from media/ yet (this session).
+        previewUrl(file) {
+            const item = get(store).find(i => i.file === file);
+            return item ? item.url : null;
+        },
+        // Commit items for the page-save payload — only entries not yet committed.
+        // Blob -> base64 data URL HERE; each carries its own action/encoding so it
         // merges into the content commit without overriding the content item.
         async toCommitItems() {
-            return Promise.all(get(store).map(async item => ({
-                action: item.action,
+            return Promise.all(get(store).filter(i => !i.committed).map(async i => ({
+                action: 'create',
                 encoding: 'base64',
-                file: item.file,
-                contents: await blobToDataURL(item.blob),
+                file: i.file,
+                contents: await blobToDataURL(i.blob),
             })));
         },
     };

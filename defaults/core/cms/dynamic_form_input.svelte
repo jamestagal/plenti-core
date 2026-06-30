@@ -81,7 +81,7 @@
             {:else if isTime(field)}
                 <Time bind:field />
             {:else if isMediaPath(field)}
-                <Media bind:field bind:showMediaModal bind:changingMedia bind:localMediaList />
+                <Media bind:field bind:showMediaModal bind:changingMedia bind:localMediaList {schema} {parentKeys} />
             {:else}
                 <Text bind:field />
             {/if}

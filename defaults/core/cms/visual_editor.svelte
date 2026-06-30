@@ -81,7 +81,7 @@
                 action={content.isNew ? 'create' : 'update'}
                 encoding="text"
                 beforeSubmit={() => pendingMedia.toCommitItems()}
-                afterSubmit={() => pendingMedia.clear()}
+                afterSubmit={() => pendingMedia.markCommitted()}
                 {user}
             />
             <Button
