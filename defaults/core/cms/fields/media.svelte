@@ -2,6 +2,7 @@
     import { isImagePath, isDocPath } from '../media_checker.js';
     import { parseImageOptions, transformImage } from '../crop-engine.js';
     import { pendingMedia } from '../pending_media.js';
+    import { fieldUploadHandler } from '../field_upload.js';
     import ImageCropModal from './image_crop_modal.svelte';
 
     export let field, showMediaModal, changingMedia, localMediaList;
@@ -29,19 +30,18 @@
     // Show a pending derivative's in-memory preview until it's saved to disk.
     $: displaySrc = ($pendingMedia, pendingMedia.previewUrl(fieldSrc)) || fieldSrc;
 
+    // Stop claiming field-scoped uploads once the media modal closes, so the
+    // standalone library / non-crop uploads keep their eager behaviour.
+    $: if (!showMediaModal) fieldUploadHandler.set(null);
+
     let showCropModal = false;
-    let cropSourceUrl = '';
+    let cropSourceUrl = '';   // URL the modal/transform LOADS (a path or blob: object URL)
+    let cropNamePath = '';    // path the OUTPUT filename is derived from
+    let cropRecrop = null;    // re-crop source stored in pendingMedia (a real path), or null
+    let cropObjectUrl = null; // object URL to revoke when the crop modal closes
     let cropError = '';
     let processing = false;
-    let cropRevertTo;   // value to restore if an auto-opened crop is cancelled
-
-    function cancelCrop() {
-        showCropModal = false;
-        if (cropRevertTo !== undefined) {
-            field = cropRevertTo;        // a cancelled auto-crop keeps the previous image
-            cropRevertTo = undefined;
-        }
-    }
+    let cropRevertTo;         // value to restore if an auto-opened crop is cancelled
 
     function loadImage(src) {
         return new Promise((resolve, reject) => {
@@ -51,36 +51,62 @@
             img.src = src;
         });
     }
+    function revokeCropUrl() {
+        if (cropObjectUrl) { URL.revokeObjectURL(cropObjectUrl); cropObjectUrl = null; }
+    }
+    function openCropFor(loadUrl, namePath, recrop, objectUrl) {
+        cropError = '';
+        cropSourceUrl = loadUrl;
+        cropNamePath = namePath;
+        cropRecrop = recrop;
+        cropObjectUrl = objectUrl;
+        showCropModal = true;
+    }
 
-    // #364 core: when a NEW image is selected/uploaded into this field, enforce
-    // the field's schema automatically — crop:true opens the modal, crop:false
-    // optimises immediately, no options just assigns.
+    // #364 core: enforce the field's schema when a NEW image enters the field —
+    // an existing library pick (a path) handled here, or a fresh upload (a File)
+    // handled by handleUploadedFile below.
     let lastHandled;
     $: if (changingMedia && field === originalMedia && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
         lastHandled = changingMedia;
+        fieldUploadHandler.set(null);              // a library pick happened, not an upload
         handleNewSelection(changingMedia);
     }
     function handleNewSelection(newPath) {
+        const recrop = pendingMedia.sourceOf(newPath) ?? newPath;
         if (!imageOptions || !isImagePath(newPath)) {
-            setFieldSrc(newPath);                      // ordinary field / non-image
+            setFieldSrc(newPath);                  // ordinary field / non-image
         } else if (imageOptions.crop !== false) {
-            cropRevertTo = field;                      // restore this if the crop is cancelled
-            setFieldSrc(newPath);                      // candidate; modal enforces the crop
-            // Use newPath directly — fieldSrc hasn't reactively updated yet.
-            cropSourceUrl = pendingMedia.sourceOf(newPath) ?? newPath;
-            cropError = '';
-            showCropModal = true;
+            cropRevertTo = field;
+            setFieldSrc(newPath);                  // candidate; modal enforces the crop
+            openCropFor(newPath, newPath, recrop, null);
         } else {
-            autoOptimise(newPath);                     // crop:false -> optimise now
+            optimiseToField(newPath, newPath, recrop, null);
+        }
+    }
+
+    // A configured field's FRESH upload (registered via fieldUploadHandler): the
+    // field enforces its schema and queues ONLY the derivative — the original is
+    // never eager-saved to media/.
+    async function handleUploadedFile(file) {
+        fieldUploadHandler.set(null);
+        showMediaModal = false;
+        if (!imageOptions) return;
+        const loadUrl = URL.createObjectURL(file); // load the not-yet-saved file
+        const namePath = 'media/' + file.name;      // name the output after the file
+        if (imageOptions.crop !== false) {
+            cropRevertTo = field;
+            openCropFor(loadUrl, namePath, null, loadUrl);
+        } else {
+            await optimiseToField(loadUrl, namePath, null, loadUrl);
         }
     }
 
     function openCrop() {
-        cropError = '';
-        cropRevertTo = undefined;                       // manual re-crop: cancel keeps current
-        // Re-crop/optimise from the ORIGINAL source (within this session).
-        cropSourceUrl = pendingMedia.sourceOf(fieldSrc) ?? fieldSrc;
-        showCropModal = true;
+        // Manual re-crop/optimise from the field's current value (cancel keeps it).
+        const src = pendingMedia.sourceOf(fieldSrc) ?? fieldSrc;
+        cropRevertTo = undefined;
+        openCropFor(src, src, src, null);
     }
     async function onCropConfirm(e) {
         if (processing) return;
@@ -88,10 +114,12 @@
         cropError = '';
         try {
             const { image, selection } = e.detail;
-            const result = await transformImage(image, selection, imageOptions, cropSourceUrl);
-            pendingMedia.add(result.filePath, result.blob, cropSourceUrl);
+            const result = await transformImage(image, selection, imageOptions, cropNamePath);
+            // Only after BOTH transform and queue succeed do we touch the field.
+            pendingMedia.add(result.filePath, result.blob, cropRecrop ?? result.filePath);
             setFieldSrc(result.filePath);
             cropRevertTo = undefined;
+            revokeCropUrl();
             showCropModal = false;
         } catch (error) {
             cropError = error instanceof Error ? error.message : 'The image could not be processed.';
@@ -99,31 +127,43 @@
             processing = false;
         }
     }
+    function cancelCrop() {
+        showCropModal = false;
+        revokeCropUrl();
+        if (cropRevertTo !== undefined) {
+            field = cropRevertTo;          // a cancelled auto-crop keeps the previous image
+            cropRevertTo = undefined;
+        }
+    }
 
     // crop:false automatic optimisation (contain/convert), no modal. Keeps the
     // previous field value untouched if the transform fails.
-    async function autoOptimise(newPath) {
+    async function optimiseToField(loadUrl, namePath, recrop, objectUrl) {
         if (processing) return;
         const previous = field;
         processing = true;
         cropError = '';
         try {
-            const image = await loadImage(newPath);
-            const result = await transformImage(image, null, imageOptions, newPath);
-            pendingMedia.add(result.filePath, result.blob, newPath);
+            const image = await loadImage(loadUrl);
+            const result = await transformImage(image, null, imageOptions, namePath);
+            pendingMedia.add(result.filePath, result.blob, recrop ?? result.filePath);
             setFieldSrc(result.filePath);
         } catch (error) {
             field = previous;
             cropError = error instanceof Error ? error.message : 'The image could not be processed.';
         } finally {
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
             processing = false;
         }
     }
 
-    // --- existing media-swap entry point ---
+    // --- media-swap entry point ---
     let originalMedia;
     const swapMedia = () => {
         originalMedia = field;
+        // Claim field-scoped uploads when this field enforces a schema, so a
+        // fresh upload is processed (not eager-saved). Cleared on modal close.
+        fieldUploadHandler.set(imageOptions ? handleUploadedFile : null);
         changingMedia = fieldSrc;
         showMediaModal = true;
     }

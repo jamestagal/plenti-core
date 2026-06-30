@@ -3,11 +3,21 @@
     import MediaGrid from './media_grid.svelte';
     import ButtonWrapper from './button_wrapper.svelte';
     import Button from './button.svelte';
+    import { get } from 'svelte/store';
+    import { fieldUploadHandler } from './field_upload.js';
 
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
     let enabledFilters = [];
 
     const createMediaList = file => {
+        // Field-scoped upload: a schema-configured media field enforces its crop/
+        // scale/convert and commits only the derivative — hand it the File rather
+        // than taking the eager "Save Media" path that writes the original.
+        const handler = get(fieldUploadHandler);
+        if (handler) {
+            handler(file);
+            return;
+        }
         let reader = new FileReader();
         reader.readAsDataURL(file);
         reader.onload = e => {
