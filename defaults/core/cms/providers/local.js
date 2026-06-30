@@ -42,7 +42,10 @@ export async function postLocal(commitList, shadowContent, action, encoding) {
             history.pushState(null, '', env.baseurl && !env.local ? env.baseurl : '/');
         }
     } else {
-        const { error, message } = await response.json();
-        throw new Error(`Publish failed: ${error || message}`);
+        // The local /postlocal endpoint returns plain-text errors (http.Error),
+        // not JSON — read text so the message survives instead of throwing on a
+        // JSON parse ("Unexpected token ...").
+        const message = await response.text();
+        throw new Error(`Save failed (${response.status}): ${message.trim() || response.statusText}`);
     }
 }
