@@ -149,6 +149,11 @@ server cmd/serve.go (local provider only; D6)
 - `crop:true` → auto-open the crop modal on the new source (cancel reverts to the previous value — an uncropped large image must not be left in a crop:true field);
 - `crop:false` → auto-optimise immediately (contain/convert), no modal;
 - a failed transform keeps the previous field value + shows an inline error.
+
+This holds for **both entry points into a configured field**:
+- *Library pick* (an existing path) — handled via the `changingMedia` reactive.
+- *Fresh upload* (a `File`) — `file_upload.svelte` runs in a field-scoped mode (registered through the `fieldUploadHandler` store) that hands the `File` to the field **instead of eager-saving the original**; the field processes it and queues only the derivative, so the untouched original never reaches Git. The handler is cleared on modal close, so the standalone Media library and no-option fields keep their eager upload behaviour.
+
 The manual Crop/Optimise button remains as a re-process surface. **Direct Media-Library crop (cropping an arbitrary library image with no field/schema context) is a separate, secondary enhancement** — it can't know which field's dimensions/format to enforce.
 
 ## Implementation plan (all committed on `feat/image-crop`)
@@ -156,13 +161,14 @@ The manual Crop/Optimise button remains as a re-process surface. **Direct Media-
 - **`crop-engine.js`:** transform-only module + the matrix + dependency-free tests (D3/D7/D9).
 - **Deferred-persistence foundation:** `providers/commit.js` (shared dispatch), per-item action/encoding in all providers, `pending_media.js` store, Button `beforeSubmit` merge (D5).
 - **Field integration:** `image_crop_modal.svelte` + `media.svelte` (schema resolution, source-path distinction, object dual-format, preview persistence) + `media_checker.js` guard.
-- **Auto-process on update (D10).**
+- **Auto-process on update (D10)** — for library picks and fresh uploads (`field_upload.js` store + `file_upload.svelte` field-scoped mode).
 
 ### Acceptance — verified in a clean fixture site (browser + disk)
 1. ✅ Select a 5000px JPEG into `crop:true` `hero_string` → modal **auto-opens** on that source; confirm → derivative + content committed in **one** provider commit. Byte proof: 5000px JPEG → 500×300 WebP = **98.8%** (388,409 → 4,862 b).
 2. ✅ Select it into `crop:false` `banner_contain` → **auto 500×300 derivative, no modal** = **97.7%** (388,409 → 9,110 b, jpg preserved — no `convert`).
-3. ✅ Object media: `src` updated, `alt` preserved; re-crop uses the **original** source + replaces (no duplicate); GIF flattens to a still webp; cancel reverts; ordinary fields unchanged.
-4. ✅ Engine unit tests (22) + `/postlocal` curl matrix all green.
+3. ✅ **Upload** a fresh 5000px JPEG into `crop:true` `hero_string` → crop modal opens **on the upload before any request**; into `crop:false` `banner_contain` → derivative, no modal. Page save writes **only** the derivatives; the original `fresh-upload.jpg` **never appears in `media/`**. Cancel makes no commit and keeps the previous value.
+4. ✅ Object media: `src` updated, `alt` preserved; re-crop uses the **original** source + replaces (no duplicate); GIF flattens to a still webp; ordinary fields unchanged.
+5. ✅ Engine unit tests (22) + `/postlocal` curl matrix all green.
 
 ---
 
@@ -172,10 +178,12 @@ The manual Crop/Optimise button remains as a re-process surface. **Direct Media-
 ---
 
 ## Status of work so far
-Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `crop-engine.js` + tests → `providers/local.js` fix → deferred-persistence foundation → field-crop modal integration → auto-process-on-update.
+Committed on `feat/image-crop`: ADR + pipeline doc → server hardening → `crop-engine.js` + tests → `providers/local.js` fix → deferred-persistence foundation → field-crop modal integration → auto-process-on-update → **field-scoped upload pre-processing**.
+
+The select **and** upload paths into a configured field now process the image before it is saved to the repository.
 
 **Remaining before a PR:**
-- ⏳ GitLab/Gitea dispatch is **code-verified only** (per-item `?? action` fallback preserves existing behaviour); exercise the real remote provider path before claiming it in the PR.
+- ⏳ GitLab/Gitea dispatch is **code-verified only** (per-item `?? action` fallback preserves existing behaviour); exercise the real remote provider path — for both a library pick and a fresh upload — before claiming it in the PR.
 - ⏳ Schema shape (`options[]` vs `crop{}`) — settle with Jim (the parser accepts both today).
 - ⏳ Optional follow-up: direct Media-Library crop controls (D10).
 - ⏳ Decide whether JS engine/store tests live in-repo and how they run in CI.
