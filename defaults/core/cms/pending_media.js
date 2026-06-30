@@ -73,9 +73,17 @@ function createPendingMedia() {
         // Commit items for the page-save payload — only entries not yet committed.
         // Blob -> base64 data URL HERE; each carries its own action/encoding so it
         // merges into the content commit without overriding the content item.
+        //
+        // action 'upsert' is a provider-neutral intent: a derivative path may or may
+        // not already exist (a re-crop in a LATER session re-derives the same
+        // filename). Each provider resolves it to create-or-update against the live
+        // repo — a fixed 'create' collides cross-session (GitLab rejects the atomic
+        // commit, Gitea returns 422). 'upsert' is never sent to a remote API verbatim:
+        // the GitLab/Gitea providers translate it (the local provider overwrites, so
+        // it treats upsert as create).
         async toCommitItems() {
             return Promise.all(get(store).filter(i => !i.committed).map(async i => ({
-                action: 'create',
+                action: 'upsert',
                 encoding: 'base64',
                 file: i.file,
                 contents: await blobToDataURL(i.blob),

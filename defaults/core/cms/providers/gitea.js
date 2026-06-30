@@ -52,14 +52,46 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
         giteaUser = data;
     });
 
-    for (const commitItem of commitList) {
+    // Gitea's contents API is per-file (no atomic multi-file commit here — that is
+    // a separate provider-wide upgrade, see ADR 0001), so a mixed save is N
+    // sequential commits. Commit MEDIA (the 'upsert' derivatives) BEFORE content:
+    // if a media commit fails the loop aborts (throw) before the content — which
+    // references that derivative — is ever written. The remaining failure mode is a
+    // harmless orphan derivative (media ok, content later fails), never a content
+    // file pointing at a missing image.
+    const orderedList = [
+        ...commitList.filter(i => (i.action ?? action) === 'upsert'),
+        ...commitList.filter(i => (i.action ?? action) !== 'upsert'),
+    ];
+
+    for (const commitItem of orderedList) {
         // Per-item action/encoding (falling back to the call-level values) so a
-        // single save can mix content (update/text) and media (create/base64).
-        const itemAction = commitItem.action ?? action;
+        // single save can mix content (update/text) and media (upsert/base64).
+        let itemAction = commitItem.action ?? action;
         const itemEncoding = commitItem.encoding ?? encoding;
         const url = `${apiBaseUrl}/repos/${owner}/${repo}/contents/` + commitItem.file;
 
         const makeDataStr = base64Str => base64Str.split(',')[1];
+
+        // Resolve the provider-neutral 'upsert' (a derivative that may already exist
+        // from a prior session) into create/update via existence: GET the file →
+        // 200 = update (use the returned sha), 404 = create. Any other status is a
+        // real error (auth/permission/server) and aborts the save — never treated as
+        // "absent". A fixed 'create' would 422 on a re-derived path cross-session.
+        let resolvedSha;
+        if (itemAction === 'upsert') {
+            const probe = await fetch(url, { method: 'GET', headers });
+            if (probe.ok) {
+                const data = await probe.json();
+                itemAction = 'update';
+                resolvedSha = data.sha;
+            } else if (probe.status === 404) {
+                itemAction = 'create';
+            } else {
+                throw new Error(`Publish failed: could not resolve ${commitItem.file} (HTTP ${probe.status})`);
+            }
+        }
+
         let message = capitalizeFirstLetter(itemAction) + ' ' + (commitList.length > 1 ? commitList.length + ' files' : commitList[0].file);
         let content = itemEncoding === "base64" ? makeDataStr(commitItem.contents) : btoa(unescape(encodeURIComponent(commitItem.contents)));
 
@@ -73,7 +105,9 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
             content: content,
         };
 
-        if (itemAction === 'update' || itemAction === 'delete') {
+        if (resolvedSha) {
+            payload.sha = resolvedSha;
+        } else if (itemAction === 'update' || itemAction === 'delete') {
             // Get details about existing file from Gitea
             await fetch(url, {
                 method: 'GET',

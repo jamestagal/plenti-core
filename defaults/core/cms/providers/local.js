@@ -14,8 +14,12 @@ export async function postLocal(commitList, shadowContent, action, encoding) {
         // commit can mix content (update/text) and media derivatives (create/base64).
         const itemAction = commitItem.action ?? action;
         const itemEncoding = commitItem.encoding ?? encoding;
+        // The local /postlocal write overwrites in place, so the provider-neutral
+        // 'upsert' (create-or-replace a media derivative) maps to 'create' here —
+        // the server validator only knows create/update/delete.
+        const wireAction = itemAction === 'upsert' ? 'create' : itemAction;
         body.push({
-            action: itemAction,
+            action: wireAction,
             encoding: itemEncoding,
             file: commitItem.file,
             contents: itemEncoding === "base64" ? makeDataStr(commitItem.contents) : commitItem.contents
