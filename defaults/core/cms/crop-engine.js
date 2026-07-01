@@ -28,6 +28,19 @@ const OUTPUT_FORMATS = ['jpg', 'png', 'webp', 'avif']; // canvas encoders; gif i
 const MAX_OUTPUT_PIXELS = 40000000; // 40 MP guard against runaway schema dimensions
 const ASPECT_TOLERANCE = 0.01;      // 1% — tolerate integer-rounding, reject gross distortion
 
+// Defaults for the Media Library upload GATEWAY (schema-free general optimisation): convert to a
+// web-ready format and contain within a MAXIMUM edge (downscale oversized images, never upscale).
+// crop:false = whole image by default; the standalone modal may toggle crop on. maxWidth/maxHeight
+// are a MAX bound (contain), NOT a forced exact 2048x2048 — see transformImage's matrix.
+export const LIBRARY_OPTIMISE_DEFAULTS = Object.freeze({
+    crop: false,
+    scale: true,
+    convert: 'webp',
+    quality: 0.82,
+    maxWidth: 2048,
+    maxHeight: 2048,
+});
+
 /** Lowercase file extension from a path/URL, without the dot. */
 export function sourceExtension(path) {
     const m = String(path || '').toLowerCase().match(/\.([a-z0-9]+)(?:[?#].*)?$/);
@@ -171,9 +184,21 @@ export async function transformImage(img, selection, options, srcPath, _extra = 
     // 2. output dimensions per matrix
     const cfgW = positiveIntOrNull(o.width);
     const cfgH = positiveIntOrNull(o.height);
+    // maxWidth/maxHeight = "contain within a MAXIMUM edge" (the Media Library gateway's general
+    // downscale), distinct from exact width/height. They are mutually exclusive with exact dims.
+    const maxW = positiveIntOrNull(o.maxWidth);
+    const maxH = positiveIntOrNull(o.maxHeight);
+    if ((cfgW || cfgH) && (maxW || maxH)) {
+        throw new Error('Use exact dimensions or maximum dimensions, not both.');
+    }
     let outW, outH;
     if (!doScale) {
         outW = srcW; outH = srcH;                       // scale:false -> source-pixel size
+    } else if (maxW || maxH) {
+        // contain-after-crop: fit the (possibly cropped) rect within maxW/maxH, never upscale.
+        const scale = containScale(srcW, srcH, maxW, maxH);
+        outW = Math.max(1, Math.round(srcW * scale));
+        outH = Math.max(1, Math.round(srcH * scale));
     } else if (doCrop) {
         if (cfgW && cfgH) {
             const ratioErr = Math.abs((srcW / srcH) - (cfgW / cfgH)) / (cfgW / cfgH);
@@ -211,6 +236,10 @@ export async function transformImage(img, selection, options, srcPath, _extra = 
         filePath: outputFilename(srcPath, { width, height, ext: actualExt }),
         width,
         height,
+        // The engine's own normalised source rectangle (post-clamp/round). The Media Library
+        // gateway fingerprints THESE exact pixels for its collision-resistant name rather than
+        // re-deriving the rounding — so "same source pixels + same settings -> same identity".
+        sourceRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
         requestedMime,
         actualMime,
         formatFallback: requestedMime !== actualMime,

@@ -114,10 +114,24 @@ eq(fillRectCalled, true, 'C10a JPEG output fills background');
 resetFill(); await transformImage(img, { x: 0, y: 0, width: 400, height: 300 }, { crop: true, scale: true, width: 400, height: 300, convert: 'webp' }, 'media/p.png');
 eq(fillRectCalled, false, 'C10b non-JPEG output does not fill');
 
-// locked return contract
+// locked return contract (sourceRect added for the Media Library gateway fingerprint)
 res = await transformImage(img, { x: 0, y: 0, width: 400, height: 300 }, { crop: true, scale: true, width: 400, height: 300 }, 'media/p.png');
-eq(Object.keys(res), ['blob', 'filePath', 'width', 'height', 'requestedMime', 'actualMime', 'formatFallback', 'converted', 'bytes'], 'transformImage return shape is the frozen contract');
+eq(Object.keys(res), ['blob', 'filePath', 'width', 'height', 'sourceRect', 'requestedMime', 'actualMime', 'formatFallback', 'converted', 'bytes'], 'transformImage return shape is the frozen contract');
 eq(res.bytes > 0, true, 'transformImage returns bytes (size-win proof)');
+eq(res.sourceRect, { x: 0, y: 0, width: 400, height: 300 }, 'C-SR sourceRect is the normalised source rect');
+
+// --- Media Library gateway: maxWidth/maxHeight (contain within a MAX edge, never a forced exact) ---
+// C-MAX1: crop:false + maxW/H on an oversized whole image -> contain to the longest edge, keep aspect.
+res = await transformImage(img, null, { crop: false, scale: true, maxWidth: 400, maxHeight: 400, convert: 'webp' }, 'media/p.png');
+eq([res.width, res.height], [400, 300], 'C-MAX1 800x600 contained into max 400 -> 400x300 (not 400x400)');
+// C-MAX2: crop:true + maxW/H (no exact dims) -> crop to selection, THEN contain the cropped rect.
+res = await transformImage(img, { x: 0, y: 0, width: 800, height: 400 }, { crop: true, scale: true, maxWidth: 400, maxHeight: 400, convert: 'webp' }, 'media/p.png');
+eq([res.width, res.height], [400, 200], 'C-MAX2 crop 800x400 then contain max 400 -> 400x200');
+// C-MAX3: never upscale — a source already within the max stays its own size.
+res = await transformImage(img, { x: 0, y: 0, width: 300, height: 200 }, { crop: true, scale: true, maxWidth: 2048, maxHeight: 2048, convert: 'webp' }, 'media/p.png');
+eq([res.width, res.height], [300, 200], 'C-MAX3 within-max source is not upscaled');
+// C-MAX4: mixing exact dims with max dims is rejected.
+await throwsAsync(() => transformImage(img, { x: 0, y: 0, width: 400, height: 300 }, { crop: true, scale: true, width: 400, height: 300, maxWidth: 2048 }, 'media/p.png'), 'C-MAX4 exact + max dims rejected');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
