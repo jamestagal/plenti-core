@@ -1,0 +1,71 @@
+# #364 — browser regression + remote-provider smoke evidence
+
+Companion to [`364-acceptance-matrix.md`](364-acceptance-matrix.md). Records the
+manual integration evidence (local fixture browser run) and the live-remote
+smoke expectations for the parts the automated suites cannot reach.
+
+## A. Local browser regression (built binary serving `crop-fixture`)
+
+Environment: `plenti serve` on the fork binary, local mode (`env.local=true` →
+CMS editable → `/postlocal` writes to disk). Chrome via automation.
+
+| Scenario | Result |
+|---|---|
+| Standalone optimise (whole image) | `big-photo-01e60f1b…-2048x1229.webp` 388KB→64KB, valid WebP |
+| Standalone crop | zoom→336×336 sub-crop; `big-photo-98ab9e6b…-336x336.webp`, distinct hash from the whole-image derivative |
+| Mixed multi-file queue (JPEG, PNG, PDF, SVG, GIF) | deterministic order; 2 image derivatives + 3 byte-identical passthrough; GIF stayed animated (89a) |
+| Field ordinary/no-schema upload | path assigned directly (no crop) — covered by Slice 2 |
+| Field `crop:true` upload → auto-return | gateway optimise-only (no crop toggle) → media modal closes → **one** field crop modal opens; on Apply, `pendingMedia` stages the derivative, field value = path |
+| Field `crop:true` SUCCESS end-to-end | Library-pick `perry.webp` → field crop → Apply → `pendingMedia` blob preview → **page Save** flushed `media/perry-500x300.webp` to disk + content JSON |
+| Cancel current | Skip on image 1/3 advanced to 2/3; skipped item produced no saved file |
+| Cancel all | modal closed, queue cleared, **0** `cancel-test-*` files on disk |
+| Refresh persistence | after reload + reopen tray, `hero_string` field renders `media/perry-500x300.webp` (naturalWidth 500×300); value survived in `generated/content.js`; derivative in `public/media/` |
+| Content JSON purity | `data:image` count = **0** after every operation |
+| Object URLs | **0** blob-backed `<img>` after modals close / reload; **0** console errors across the whole session |
+
+### Forced failure paths (the two Slice-2 ownership boundaries)
+
+| Path | Injection | Result |
+|---|---|---|
+| **Provider failure before canonical save** | one-shot `/postlocal` → 500 on a field-launched eager commit | field value unchanged (`media/perry.webp` on disk), `media[]` unchanged, **no file written**, modal stays actionable, error = "Save failed (500): simulated provider failure" (an upload/provider failure, not a field failure). Exactly 1 postlocal call (no silent retry). |
+| **Canonical save OK, field processing fails after** | gateway commit succeeds; one-shot `getContext('2d')→null` on the *field* crop transform | canonical asset **persisted** (`fail-path2-01e60f1b…-2048x1229.webp` on disk, valid WebP), media modal **already closed**, error surfaced in the field crop UI as a transform/field failure ("source image … invalid dimensions"), **not** "upload failed". |
+
+### Known fixture-environment caveat (NOT a code defect)
+
+Re-loading a **just-committed gateway derivative** into the field crop modal
+**in the same session** can yield an `<img>` stuck at `naturalWidth=0` even though:
+the file is a valid `RIFF…WEBP` (verified), returns HTTP 200, `createImageBitmap`
+decodes it to full dimensions, and a **fresh `Image()` loads the identical URL
+fine** (`nat:[2048,1229]`). The pre-existing field **Crop** button on an asset
+that predates the session loads perfectly (`perry.webp` → 450×291), and after a
+rebuild the saved derivative renders fine (`perry-500x300.webp` → 500×300). So the
+0×0 is a **local-serve cache/timing race** between the just-written file and the
+modal's immediate `<img>` load, orthogonal to the gateway code. In a real
+deployment the provider write and the served origin are the same store; if it ever
+surfaces there, the fix is a cache-bust query on the crop modal's source — a
+one-line change deferred out of this hardening slice (no product-behaviour change).
+
+## B. Live remote smoke (GitLab / Gitea) — to run against a real host
+
+The provider **request contract** is unit-tested with mocked `fetch`
+(`scripts/test-providers.mjs`): per-item create/upsert resolution, GitLab atomic
+batch + HEAD-resolve, Gitea sequential media-before-content, and the failure
+behaviour (abort → no write; `onSave` never fires on partial failure). The
+following require a live host and are a manual pre-merge checklist:
+
+- [ ] **GitLab** — upload a derivative, then re-upload the *same* hashed name →
+      the second commit resolves to `action: update` (HEAD found → `last_commit_id`
+      sent), no 422. Atomic single-commit (content+media in one POST).
+- [ ] **Gitea** — same derivative re-upload → GET finds the blob → `PUT` with the
+      resolved `sha` (update), no 422. Media write precedes content write.
+- [ ] **Passthrough duplicate** — re-upload a PDF/SVG/GIF of the same name → stays
+      `action: create` (NOT silently overwritten just because the feature exists);
+      an existing-file 422 is surfaced, not swallowed.
+- [ ] **Gitea partial-batch caveat** — a mixed batch is **sequential**: if an early
+      raw `create` (e.g. a PDF) commits and a later item fails, retrying the same
+      `create` may now 422 because the file exists. This is a documented limitation,
+      NOT atomic retry (see ADR 0001). Confirm the UI surfaces the partial state
+      rather than claiming a clean rollback.
+
+> These four are the only checks that need network credentials; everything else in
+> the acceptance matrix is proven offline (unit suites + local fixture browser).

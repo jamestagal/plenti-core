@@ -121,9 +121,10 @@ server cmd/serve.go (local provider only; D6)
 
 ---
 
-## Open question (for Jim) — one remains
+## Open questions (for Jim)
 
-**Schema shape** — `options:[{width,height,scale,crop,convert}]` (his sketch) vs `crop:{…}` (prototype)? The module accepts both today; he picks the canonical one. *(Write-allowlist and no-stretch are resolved above: mirror `media_checker`; reject distortion.)*
+1. **Schema shape** — `options:[{width,height,scale,crop,convert}]` (his sketch) vs `crop:{…}` (prototype)? The module accepts both today; he picks the canonical one. *(Write-allowlist and no-stretch are resolved above: mirror `media_checker`; reject distortion.)*
+2. **Field-schema role now that the Library optimises on ingest (the D12 Stage-2 gate)** — with optimisation happening as images enter the Media Library, should field schema options **continue to auto-process** a selected image (D10 + the `options[]` sketch), or become **placement-crop requirements only** (selecting media assigns the library asset unchanged; the field exposes an explicit **Crop** action)? Consequence A: field selection may optimise/crop again automatically. Consequence B: field selection assigns the path unchanged; the Crop button makes a placement-specific derivative. This is a public schema-contract change, so D12 **Stage 2 is held** until this is confirmed; Stage 1 preserves D10 unchanged.
 
 ---
 
@@ -200,3 +201,36 @@ The select **and** upload paths into a configured field now process the image be
 - **Gap 3 — Gitea `onSave` fired per file, not per commit.** Media-first ordering turned a pre-existing untidiness into a real bug: the post-success `onSave`/route-push sat *inside* the per-file loop, so a successful media write signalled "saved" to the UI **before** a possibly-failing content write — contradicting the retryable guarantee. **Fix:** `onSave`/`onDelete`/route-push moved to **commit-level** (after every file commits). Asserted by 4 cases: multi-item success fires `onSave` exactly once; a media failure and a content-after-media failure each fire it zero times; single-item behaviour unchanged.
 - **Accepted residual limitation (documented):** on Gitea, if media succeeds but the *content* write then fails, an **orphan derivative** can remain in `media/`. This is clearly safer than the inverse (content pointing at a missing image) and matches Gitea's existing always-sequential commit behaviour — no new failure mode is introduced.
 - **Deferred (separate provider-wide work, NOT this PR):** migrating the whole Gitea provider to its **multi-file commit API** (`/contents` batch with `operation:"upload"`) would make Gitea commits atomic like GitLab's. That benefits *every* Gitea commit, not just image-crop, and changes the provider's commit model + needs compatibility detection + a fallback — so it belongs in its own provider-focused issue/PR. Recorded here so it isn't lost.
+
+---
+
+**D12 — The Media Library is the image-optimisation *gateway* (Stage 1, additive; a schema-semantics change is Stage 2, pending Jim).**
+
+Side-by-side testing of this fork against the original prototype showed the feature implemented **field-specific** processing (D10) but was missing the general ingestion gateway #364 actually describes: *upload into the Media Library → it is optimised at that point*. The Library is the funnel through which images enter the CMS; authors then *select* an already-optimised asset onto a field. This decision adds that gateway **without changing the field-schema contract** (that is held for Jim, below).
+
+**The three-representation invariant (load-bearing).** An image exists in exactly three forms that are never interchanged:
+
+```
+Preview     blob:… / data:image/…;base64,…        in-memory, for <img> only
+Transport   { action, encoding:'base64', file:"media/name-<hash>-WxH.webp",
+              contents:"data:image/webp;base64,…" }   commit item; provider strips the prefix
+Persisted   media/name-<hash>-WxH.webp             the string in the grid AND field content JSON
+```
+
+The grid and every field value hold the **persisted path**, never a transport data URL. A pre-existing latent bug pushed `item.contents` (a data URL) into `media[]`; it was masked because the grid's `isImage` accepts both a path and a data URL. `addUploadsToLibrary()` now enters **only paths** (`new Set` deduped) — one rule for optimised derivatives *and* passthrough.
+
+**Stage 1 — what this PR builds (no schema-contract change):**
+- **`crop-engine.js`** — `LIBRARY_OPTIMISE_DEFAULTS` (`{crop:false, scale:true, convert:'webp', quality:0.82, maxWidth:2048, maxHeight:2048}`) + a new **`maxWidth`/`maxHeight` "contain within a MAX edge"** branch (distinct from exact `width`/`height`; mixing the two is rejected) + `transformImage` now returns the normalised `sourceRect`. The exact-dimension field path (D7) is untouched.
+- **Eager canonical save.** Library uploads commit immediately (reusing the shared `commit()` from D11), NOT the deferred `pendingMedia` flow (that stays the field-crop mechanism). Standalone queues derivatives for a "Save Media" batch; **field-launched saves in one click** and auto-returns the persisted path.
+- **Collision-resistant hashed identity** — `media/name-<hash16>-WxH.webp` via a deterministic **versioned two-stage SHA-256**: `sourceDigest = SHA-256(bytes)`, then `SHA-256(canonicalJSON{version, sourceDigest, sourceRect, maxWidth, maxHeight, format, quality})`. Same source + same settings → same path (safe `upsert` update); different source **or** different crop → different path (no silent overwrite of a live asset). The **field**-derivative name (`outputFilename`, D7) is deliberately left un-hashed — hashing is only the Library-ingestion identity.
+- **Per-item action** (D11) carries the mix: generated derivatives `upsert`, raw passthrough (PDF/SVG/GIF) `create`, in one commit list. Passthrough retains original bytes + extension (animation preserved).
+- **Entry-point ownership** — an explicit `uploadContext` (`{kind:'standalone'}` vs `{kind:'field', onSavedPath}`), **never inferred** from `changingMedia`. On a field-launched success, `file_upload.svelte` **emits** the path; `media_modal.svelte`/`admin_menu` owns the add-to-library + close + **context reset** (a child can't reset a prop it doesn't own — else a later standalone upload assigns to a stale field), then hands the path to the field, which runs its existing D10 schema processing.
+- **Optional Crop toggle — standalone only.** A field with `crop:true` already opens its own placement crop *after* the gateway returns, so the gateway is optimise-only for field uploads (exactly one interactive crop total).
+- **Standalone multi-file queue** — `upload_queue.js`, a DOM-free state machine (`queued → preparing → awaiting_decision → processing → resolved → saved`; terminal `failed`/`cancelled`). Deterministic order, one active item at a time, Save disabled while anything is unresolved, idempotent object-URL revocation, Cancel-current/Cancel-all with a real `AbortController`.
+- **`button.svelte`** gains an additive `disabled` prop (default false) to gate "Save Media" while unresolved.
+
+**The ownership boundary (asserted by the two forced-failure tests):** once the provider commit succeeds, the **upload has succeeded**. A subsequent field-schema failure is an **assignment/field-processing failure**, not an upload failure — the canonical asset stays in the library and the previous field value is retained. Conversely a provider failure *before* the canonical save changes nothing (field, `media[]`, disk) and reports an upload failure. Both proven in the browser fixture (forced 500 / forced transform failure) and, on the request side, by `scripts/test-providers.mjs` (abort → no write; `onSave` never fires on partial failure).
+
+**Stage 2 — HELD, pending Jim's decision (do NOT build until confirmed):** whether field schema options should keep **auto-processing** a selected image (the D10 behaviour + Jim's original `options:[{width,height,scale,crop,convert}]`), or become **placement-crop requirements only** — selecting media assigns the library asset unchanged and the field exposes an explicit **Crop** action. This would redefine `crop:false`/`scale`/`convert` field semantics — a public schema-contract change, so it is isolated behind this gate. The raw-File→`uploadContext` handoff is already done in Stage 1 and is **not** part of Stage 2.
+
+**Tests & evidence (all in `feat/image-crop`):** engine 27, gateway (`test-library-optimise.mjs`) 12, queue (`test-upload-queue.mjs`) 33, providers 22 — all green; `go build ./...` exit 0. Full traceability in [`docs/364-acceptance-matrix.md`](../364-acceptance-matrix.md); browser + remote-smoke evidence in [`docs/364-remote-smoke.md`](../364-remote-smoke.md).
