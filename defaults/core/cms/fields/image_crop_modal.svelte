@@ -18,12 +18,16 @@
     export let allowCropToggle = false;
     export let confirmLabel = '';
     // Standalone multi-file queue affordances (field call sites leave these off →
-    // pixel-identical to before). `queuePosition` = { index, total } (1-based) or null;
-    // `cancelLabel` overrides the primary Cancel text; a "Cancel all" button shows
-    // only when `showCancelAll` is set (dispatches 'cancelAll').
+    // pixel-identical to before). `queuePosition` = { index, total } (1-based) or null
+    // — DISPLAY data only; `cancelLabel` overrides the primary Cancel text; a
+    // "Skip remaining" button shows only when `showCancelAll` is set (dispatches
+    // 'cancelAll'). `queueMode` is the EXPLICIT behavioural flag (never inferred
+    // from queuePosition): in queue mode the backdrop is inert — cancelling a
+    // queued file is destructive and must be an explicit button press.
     export let queuePosition = null;
     export let cancelLabel = 'Cancel';
     export let showCancelAll = false;
+    export let queueMode = false;
 
     const dispatch = createEventDispatcher();
     const MAX = 360; // max crop-box display edge (px)
@@ -161,7 +165,10 @@
 
 <svelte:window on:mousemove={onMove} on:mouseup={onUp} />
 
-<div class="crop-modal" use:portal on:mousedown|self={cancel}>
+<!-- Backdrop dismiss: inert in queue mode (an accidental click must never skip a
+     file) and inert while processing (a cancel must never race an in-flight
+     commit/transform) — only field mode, at rest, treats it as a plain cancel. -->
+<div class="crop-modal" use:portal on:mousedown|self={() => { if (!processing && !queueMode) cancel(); }}>
     <div class="panel">
         <h3>{doCrop ? 'Crop image' : 'Optimise image'}</h3>
         {#if queuePosition && queuePosition.total > 1}
@@ -208,7 +215,7 @@
 
         <div class="actions">
             {#if showCancelAll}
-                <button type="button" class="ghost" on:click|preventDefault={cancelAll} disabled={processing}>Cancel all</button>
+                <button type="button" class="ghost" on:click|preventDefault={cancelAll} disabled={processing}>Skip remaining</button>
             {/if}
             <button type="button" class="secondary" on:click|preventDefault={cancel} disabled={processing}>{cancelLabel}</button>
             <button type="button" class="primary" on:click|preventDefault={confirm} disabled={processing}>

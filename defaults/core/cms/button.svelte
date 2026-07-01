@@ -7,6 +7,11 @@
     // Optional external gate (e.g. Media uploads still under review): disables the
     // button and short-circuits submit. Defaults false → existing call sites unchanged.
     export let disabled = false;
+    // OPT-IN: keep the commit list when the commit FAILS so the caller can retry
+    // (the Media "Save Media" batch passes true — losing staged uploads on a
+    // provider failure destroys the user's reviewed work). Defaults false →
+    // every other call site (deletes, page saves) keeps today's contract.
+    export let retainCommitListOnFailure = false;
 
     let confirmTooltip;
     const onSubmit = async () => {
@@ -28,9 +33,10 @@
         }
     }
     const resetStatus = () => {
+        const failed = status === "failed";
         setTimeout(() => {
             status = "";
-            commitList = [];
+            if (!(failed && retainCommitListOnFailure)) commitList = [];
         }, 900);
     }
 </script>
