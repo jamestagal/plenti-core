@@ -175,7 +175,9 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 2000;
+        /* Above the Media modal wrapper (.plenti-modal-wrapper, z-index 99999): this
+           modal is launched FROM the Media library, so it must stack over it. */
+        z-index: 100000;
     }
     .panel {
         background: #fff;
