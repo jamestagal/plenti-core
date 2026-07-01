@@ -3,14 +3,24 @@
     import MediaGrid from './media_grid.svelte';
     import ButtonWrapper from './button_wrapper.svelte';
     import Button from './button.svelte';
+    // NOTE: keep every import line under ~80 chars. Svelte's printer wraps a
+    // longer one across lines in the compiled output, and Plenti's regex
+    // import-rewriter (cmd/build/compile.go) mis-spans a file containing MORE
+    // THAN ONE wrapped import: its greedy multi-line branch swallows everything
+    // between the first `import {` and the last line-start `} from`, corrupting
+    // the SSR component ("missing ) after argument list"). The generated
+    // svelte/internal import already wraps once this component uses {#each},
+    // so every hand-written import here must stay single-line.
     import { createEventDispatcher } from 'svelte';
+    import { onMount } from 'svelte';
+    import { onDestroy } from 'svelte';
     import ImageCropModal from './fields/image_crop_modal.svelte';
-    import { transformImage, blobToDataURL, sourceExtension, LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
+    import { transformImage, blobToDataURL } from './crop-engine.js';
+    import { LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
     import { libraryFingerprint, libraryOutputPath } from './library_optimise.js';
     import { commit } from './providers/commit.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
-    import { createUploadQueue } from './upload_queue.js';
-    import { onDestroy } from 'svelte';
+    import { classifyFile } from './upload_queue.js';
 
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
     const dispatch = createEventDispatcher();   // 'saved' (filePath) on a field-launched save
@@ -19,40 +29,54 @@
     //   { kind: 'standalone' }                         — top-nav Media library
     //   { kind: 'field', onSavedPath(path) { … } }     — a field's "Change Media"
     export let uploadContext = STANDALONE_UPLOAD_CONTEXT;
+    // The standalone upload SESSION (queue + keyed payload store) is OWNED by
+    // media_modal so it survives this view's remounts (tab switches). All
+    // mutations go through sessionOps — the owner's self-assignment is the
+    // single reactive root, so everything derived from `session` re-renders.
+    export let session = null;
+    export let sessionOps = null;
     $: isFieldUpload = uploadContext?.kind === 'field';   // REACTIVE, not a cached const
     let enabledFilters = [];
 
-    // Only raster formats the canvas can encode go through the optimise gateway.
-    // MIME first; fall back to the filename extension ONLY when the MIME is absent
-    // or generic (a valid JPEG can have an empty type; but application/pdf named
-    // "x.jpg" must NOT be treated as an image).
-    function isCanvasCandidate(file) {
-        const mime = String(file?.type || '').toLowerCase();
-        const ext = sourceExtension(file?.name);
-        const MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-        const EXTS = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
-        if (MIMES.includes(mime)) return true;
-        if (mime && mime !== 'application/octet-stream') return false;
-        return EXTS.includes(ext);
-    }
+    // ── derived session state (recomputes on every owner notify) ─────────────
+    $: queue = session?.queue ?? null;
+    // Fail-closed Save derivation: resolved items mapped through the keyed
+    // store; ANY missing payload blocks Save instead of silently committing.
+    $: resolvedPayloads = queue
+        ? queue.items.filter(i => i.state === 'resolved').map(i => session.staged.get(i.id))
+        : null;
+    $: canSave = queue
+        ? (queue.canSave && resolvedPayloads.length > 0 && resolvedPayloads.every(Boolean))
+        : localMediaList.length > 0;   // queue-null holds only approved payloads (the owner's teardown guarantees it)
+    $: unresolvedCount = queue ? queue.unresolvedCount : 0;
+    $: failedItems = queue ? queue.failedItems() : [];
+    $: pendingReviewCount = unresolvedCount - failedItems.length;
+    $: remainingSkippable = queue ? queue.skippableCount : 0;
+    // "Image X of Y" over image-type items only (passthrough is not modal-driven).
+    $: queuePosition = (() => {
+        if (!queue || !currentItem || currentItem.type !== 'image') return null;
+        const images = queue.items.filter(i => i.type === 'image');
+        const index = images.indexOf(currentItem) + 1;
+        return index > 0 ? { index, total: images.length } : null;
+    })();
 
-    // A committed transport item is deduped by its PATH so one save never carries
-    // two actions for the same file (new Set on media[] only dedupes the display).
-    function addOrReplaceCommitItem(item) {
-        const i = localMediaList.findIndex(x => x.file === item.file);
-        localMediaList = i === -1
-            ? [...localMediaList, item]
-            : localMediaList.map((x, k) => (k === i ? item : x));
-    }
+    // ── the optimise-gateway modal driver ─────────────────────────────────────
+    let showCropModal = false;
+    // Field mode: a component-owned object URL (created + revoked here).
+    // Standalone: an alias of the queue-owned item.objectUrl — never revoked here.
+    let cropSourceUrl = '';
+    let cropSourceFile = null; // the File being optimised (for the fingerprint)
+    let sourcePath = '';      // media/<name> the OUTPUT path is derived from
+    let cropError = '';
+    let fieldNote = '';       // field multi-drop notice (shown via the modal's error slot)
+    let processing = false;
+    let currentItem = null;   // the queue item this view is presenting
+    let destroyed = false;
+    let mounted = false;
 
-    // Build a data URL from a File without a canvas (raw passthrough: PDF/SVG/GIF).
-    function fileToDataURL(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = e => resolve(e.target.result);
-            reader.onerror = () => reject(reader.error || new Error('The file could not be read.'));
-            reader.readAsDataURL(file);
-        });
+    // FIELD mode only — standalone URLs belong to the queue's lifecycle.
+    function revokeCropUrl() {
+        if (cropSourceUrl) { URL.revokeObjectURL(cropSourceUrl); cropSourceUrl = null; }
     }
 
     // Derive the persisted TRANSPORT item for an optimised image derivative.
@@ -69,165 +93,167 @@
         return { action: 'upsert', encoding: 'base64', file: filePath, contents: await blobToDataURL(result.blob) };
     }
 
-    // ── the optimise-gateway modal driver ─────────────────────────────────────
-    let showCropModal = false;
-    let cropSourceUrl = '';   // object URL the modal LOADS (revoked on confirm/cancel/next)
-    let cropSourceFile = null; // the File being optimised (for the fingerprint)
-    let sourcePath = '';      // media/<name> the OUTPUT path is derived from
-    let cropError = '';
-    let processing = false;
-
-    // ── STANDALONE multi-file queue (field-launched stays single-file) ─────────
-    // The queue owns lifecycle/order/canSave; this component owns the DOM + transform.
-    // One item is active at a time; its object URL feeds the modal. See upload_queue.js.
-    let queue = null;
-    let currentItem = null;   // the queue item the modal is currently showing
-    let abort = null;         // AbortController for the active transform (real cancel)
-    // The queue is a plain (non-reactive) object; bump this after every mutation so
-    // Svelte recomputes canSave / unresolvedCount / queuePosition off it.
-    let queueVersion = 0;
-    const bump = () => { queueVersion++; };
-
-    $: canSave = (queueVersion, queue) ? queue.canSave : localMediaList.length > 0;
-    $: unresolvedCount = (queueVersion, queue) ? queue.unresolvedCount : 0;
-    // "Image X of Y" over image-type items only (passthrough is not modal-driven).
-    $: queuePosition = (() => {
-        void queueVersion;
-        if (!queue || !currentItem || currentItem.type !== 'image') return null;
-        const images = queue.items.filter(i => i.type === 'image');
-        const index = images.indexOf(currentItem) + 1;
-        return index > 0 ? { index, total: images.length } : null;
-    })();
-
-    function revokeCropUrl() {
-        if (cropSourceUrl) { URL.revokeObjectURL(cropSourceUrl); cropSourceUrl = null; }
-    }
-
-    // Advance the standalone queue: prepare the next item, or finish when drained.
-    // Images open the modal (awaiting_decision); passthrough resolves immediately.
-    async function advanceQueue() {
-        if (!queue) return;
-        const item = queue.current;
-        if (!item) { currentItem = null; showCropModal = false; bump(); return; }   // drained
-        currentItem = item;
-        if (item.type === 'passthrough') {
-            // Raw bytes + original extension; no modal, no canvas, no object URL.
-            queue.process(item);
-            bump();
-            try {
-                const contents = await fileToDataURL(item.file);
-                const filePath = mediaPrefix + "media/" + item.file.name;
-                const transport = { action: 'create', encoding: 'base64', file: filePath, contents };
-                if (queue.resolve(item, transport)) addOrReplaceCommitItem(transport);
-            } catch (error) {
-                queue.fail(item, error);
-                cropError = error instanceof Error ? error.message : 'The file could not be saved.';
+    // ── the queue driver ──────────────────────────────────────────────────────
+    // One loop per view instance. Ownership is enforced by the queue's
+    // SESSION-WIDE run claims, not a component-local counter: a chain that loses
+    // its claim (teardown, batch replacement, a newer claim) drops its late
+    // result; an in-flight chain from a PREVIOUS mount keeps its claim and
+    // completes its one item (exactly one read/transform), after which this
+    // mount's reactive resume takes over the queue.
+    async function driveQueue() {
+        while (!destroyed) {
+            const q = session?.queue;
+            if (!q) return;
+            const item = q.current;
+            if (!item) {                                   // drained — Save owns the rest
+                if (showCropModal || currentItem) { showCropModal = false; currentItem = null; }
+                return;
             }
-            bump();
-            advanceQueue();
+            if (q.hasActiveRun(item)) return;              // another chain is driving it
+            if (item.state === 'awaiting_decision') {      // user decision pending (or remount re-bind)
+                bindImageModal(item);
+                return;
+            }
+            const token = q.claimRun(item);
+            if (!token) return;
+            currentItem = item;
+            if (item.type === 'passthrough') {
+                // No modal for passthrough: close any open one BEFORE the read so
+                // the crop UI is never blank-but-actionable over an invisible item.
+                if (showCropModal) { showCropModal = false; cropSourceUrl = ''; }
+                if (!q.process(item)) { q.clearRun(item, token); return; }
+                sessionOps.notify();
+                let transport = null, readError = null;
+                try {
+                    const contents = await blobToDataURL(item.file);   // a File IS a Blob
+                    transport = { action: 'create', encoding: 'base64', file: mediaPrefix + "media/" + item.file.name, contents };
+                } catch (error) {
+                    readError = error instanceof Error ? error : new Error('The file could not be read.');
+                }
+                // Late-completion gate: the session may have been torn down, the
+                // batch replaced, or the claim stolen while we were reading.
+                if (session?.queue !== q || !q.ownsRun(item, token)) return;
+                if (transport) sessionOps.complete(item, token, transport);   // ATOMIC resolve+stage
+                else sessionOps.fail(item, token, readError);
+                if (destroyed) return;   // a newer mount's reactive resume continues
+                continue;
+            }
+            // Image: make a preview URL and hand the decision to the user. No
+            // async work is in flight while awaiting, so release the claim —
+            // the confirm handler claims its own run.
+            if (!q.prepare(item)) { q.clearRun(item, token); return; }
+            q.awaitDecision(item);
+            q.clearRun(item, token);
+            bindImageModal(item);
+            sessionOps.notify();
             return;
         }
-        // Processable image → make a preview URL and drive the modal off this item.
-        queue.prepare(item);              // sets item.objectUrl (the queue owns its lifecycle)
+    }
+
+    function bindImageModal(item) {
+        if (destroyed) return;
+        if (currentItem === item && showCropModal) return;   // already presenting it
+        currentItem = item;
         cropError = '';
         cropSourceFile = item.file;
-        cropSourceUrl = item.objectUrl;
+        cropSourceUrl = item.objectUrl;   // queue-owned lifecycle
         sourcePath = mediaPrefix + "media/" + item.file.name;
-        queue.awaitDecision(item);
         showCropModal = true;
-        bump();
+    }
+
+    // Resume whenever the owner notifies (a previous mount's chain completing,
+    // a new batch, a removal…). Idempotent: claimed / awaiting / drained states
+    // return without side effects beyond (re)binding the modal.
+    onMount(() => { mounted = true; driveQueue(); });
+    // Tab switches must NOT tear the session down — media_modal owns teardown on
+    // ITS destroy. Field-mode preview URLs are this component's to revoke.
+    onDestroy(() => { destroyed = true; if (isFieldUpload) revokeCropUrl(); });
+    $: if (mounted && session) resumeIfIdle(session);
+    function resumeIfIdle(_session) {
+        if (!destroyed && !processing) driveQueue();
     }
 
     async function onLibraryCropConfirm(event) {
         if (processing) return;
         processing = true;
         cropError = '';
-        // A fresh signal per confirm; "Cancel current"/"Cancel all" abort it.
-        abort = new AbortController();
-        const signal = abort.signal;
+        if (isFieldUpload) {
+            try {
+                const transport = await buildDerivativeItem({
+                    image: event.detail.image, selection: event.detail.selection,
+                    overrides: event.detail.overrides, file: cropSourceFile, sourcePath,
+                });
+                // ONE click: eager commit now (no "Save Media"), then EMIT the
+                // persisted path to the modal owner (admin_menu adds it to the
+                // library, closes+resets, hands it to the field). Once the commit
+                // succeeds, the UPLOAD has succeeded — field processing is the
+                // parent's own concern.
+                await commit([transport], null, transport.action, transport.encoding, user);
+                revokeCropUrl();
+                dispatch('saved', transport.file);
+            } catch (error) {
+                cropError = error instanceof Error ? error.message : 'The image could not be processed.';
+            } finally {
+                processing = false;
+            }
+            return;
+        }
+        // Standalone: claim the decision run for the current item. A lost claim
+        // (teardown / remount race) means the late result is dropped, not staged.
+        const q = session?.queue;
+        const item = currentItem;
+        const token = q ? q.claimRun(item) : null;
+        if (!token) { processing = false; return; }
         try {
             const transport = await buildDerivativeItem({
                 image: event.detail.image, selection: event.detail.selection,
-                overrides: event.detail.overrides, file: cropSourceFile, sourcePath,
+                overrides: event.detail.overrides, file: item.file,
+                sourcePath: mediaPrefix + "media/" + item.file.name,
             });
-            if (signal.aborted) return;   // cancelled mid-transform → drop the result
-            if (isFieldUpload) {
-                // ONE click: eager commit now (no "Save Media"), then EMIT the persisted
-                // path to the modal owner (admin_menu) which adds it to the library,
-                // closes+resets the context, and hands it to the field. Once the commit
-                // succeeds, the UPLOAD has succeeded — field processing is the parent's.
-                await commit([transport], null, transport.action, transport.encoding, user);
-                if (signal.aborted) return;
-                revokeCropUrl();
-                dispatch('saved', transport.file);
-            } else {
-                // Standalone: mark this queue item resolved (its URL is revoked by the
-                // queue), stage the transport for the "Save Media" batch, advance.
-                processing = false;
-                if (queue && currentItem && queue.resolve(currentItem, transport)) {
-                    cropSourceUrl = '';           // ownership handed to the queue (already revoked)
-                    addOrReplaceCommitItem(transport);
-                }
-                bump();
-                await advanceQueue();
-                return;
-            }
+            if (session?.queue !== q || !q.ownsRun(item, token)) { processing = false; return; }
+            sessionOps.complete(item, token, transport);   // ATOMIC resolve+stage
         } catch (error) {
-            if (!signal.aborted) {
-                cropError = error instanceof Error ? error.message : 'The image could not be processed.';
-                if (queue && currentItem) { queue.fail(currentItem, error); bump(); }   // blocks Save until retried/removed
-            }
-        } finally {
+            // A failed image transform keeps the item awaiting (retryable in the
+            // open modal) — release our claim and show the error where it happened.
+            if (session?.queue === q) q.clearRun(item, token);
+            cropError = error instanceof Error ? error.message : 'The image could not be processed.';
             processing = false;
+            return;
         }
+        processing = false;
+        cropSourceUrl = '';        // the queue revoked the item's URL at resolve
+        driveQueue();              // next item (or drained → the modal closes)
     }
 
-    // Modal "Cancel" = Cancel CURRENT in the standalone queue: abort the active
-    // transform, drop this item, advance to the next. Field-launched just closes.
+    // Modal "Cancel": field mode closes; standalone = SKIP THIS FILE (explicit,
+    // buttons-only — the backdrop is inert in queue mode). Belt-and-braces
+    // processing guard: the UI is disabled during processing anyway.
     function onLibraryCropCancel() {
-        if (abort) { abort.abort(); abort = null; }
+        if (processing) return;
         cropError = '';
         if (isFieldUpload || !queue) {
             revokeCropUrl();
             showCropModal = false;
             return;
         }
-        if (currentItem) queue.cancelCurrent(currentItem);   // marks cancelled + revokes URL
+        if (currentItem) sessionOps.skipCurrent(currentItem);   // cancels + revokes + clears claim
         cropSourceUrl = '';
-        bump();
-        advanceQueue();
+        showCropModal = false;
+        driveQueue();
     }
 
-    // Cancel ALL queued files: abort, mark/revoke everything, clear queue + modal.
-    function cancelAllUploads() {
-        if (abort) { abort.abort(); abort = null; }
-        if (queue) queue.cancelAll();
-        cropSourceUrl = '';       // its URL was revoked by cancelAll
+    // "Skip remaining": approved items stay staged and savable; every pending
+    // AND failed item is dropped (the owner rebuilds the commit list).
+    function onSkipRemaining() {
+        if (processing) return;
+        cropError = '';
+        sessionOps.skipRemaining();
+        cropSourceUrl = '';
         currentItem = null;
         showCropModal = false;
-        cropError = '';
-        processing = false;
-        bump();
     }
 
-    // After a successful "Save Media" batch: the queue's resolved items are now
-    // persisted, so tear it down (all URLs already revoked on resolve) and drop the
-    // staged commit list. media[] keeps the paths added by addUploadsToLibrary().
-    function resetQueueAfterSave() {
-        if (queue) { queue.destroy(); queue = null; }
-        currentItem = null;
-        bump();
-    }
-
-    // Belt-and-braces: never leak an object URL if the component unmounts mid-queue
-    // (e.g. the parent Media modal closes). Idempotent — destroy() re-revokes safely.
-    onDestroy(() => {
-        if (abort) { abort.abort(); abort = null; }
-        if (queue) queue.destroy();
-        revokeCropUrl();
-    });
-
-    // ── FIELD-LAUNCHED single-file path (unchanged semantics; no queue) ────────
+    // ── FIELD-LAUNCHED single-file path (no queue, no session) ────────────────
     function optimiseLibraryFile(file) {
         cropError = '';
         cropSourceFile = file;
@@ -238,7 +264,7 @@
     async function passthroughFieldFile(file) {
         const filePath = mediaPrefix + "media/" + file.name;
         try {
-            const contents = await fileToDataURL(file);
+            const contents = await blobToDataURL(file);
             const item = { action: 'create', encoding: 'base64', file: filePath, contents };
             await commit([item], null, item.action, item.encoding, user);
             dispatch('saved', filePath);
@@ -247,28 +273,31 @@
         }
     }
 
-    // Entry point for BOTH input-change and drag-drop. Field-launched is single-file
-    // (input enforces it); standalone builds a queue and processes one item at a time.
+    // Entry point for BOTH input-change and drag-drop. Field-launched is
+    // single-file (extra dropped files are declined WITH a notice); standalone
+    // (re)starts the owner-held session — the session prop update triggers this
+    // view's reactive resume, which starts the drive chain.
     const selectFile = files => {
         const list = Array.from(files || []);
         if (!list.length) return;
         if (isFieldUpload) {
             const file = list[0];
-            if (isCanvasCandidate(file)) optimiseLibraryFile(file);
+            // (string concat, not a template literal — Plenti's SSR regex pipeline
+            // mishandles user template literals nested in the render output)
+            fieldNote = list.length > 1 ? 'Only one file can be used here — using ' + file.name + '.' : '';
+            if (classifyFile(file) === 'image') optimiseLibraryFile(file);
             else passthroughFieldFile(file);
             return;
         }
-        // Standalone: (re)build the queue. Appending to an in-flight queue is not
-        // supported yet — a new selection starts a fresh batch.
-        if (queue) queue.destroy();
-        queue = createUploadQueue(list, f => URL.createObjectURL(f));
-        advanceQueue();
-    }
+        sessionOps?.start(list);
+    };
 
     let filePrefix = mediaPrefix + "media/";
     $: if (enabledFilters) {
         if (enabledFilters.length > 0) {
-            // Convert filter array to path
+            // Convert filter array to path. NOTE: this mutates the staged
+            // transport objects in place — the keyed store holds the SAME object
+            // references, so both ledgers see the rewritten paths.
             let filterPath = enabledFilters[0].join('/') + "/";
             let newPrefix = mediaPrefix + "media/" + filterPath;
             localMediaList.forEach(mediaFile => {
@@ -285,8 +314,8 @@
     }
     const dropFile = ev => {
         if (!ev.dataTransfer) return;
-        // Collect dropped files, then route through the SAME entry point as the input
-        // (selectFile) so field/standalone branching + the queue apply identically.
+        // Collect dropped files, then route through the SAME entry point as the
+        // input (selectFile) so field/standalone branching applies identically.
         const files = [];
         if (ev.dataTransfer.items) {
             for (let i = 0; i < ev.dataTransfer.items.length; i++) {
@@ -303,17 +332,27 @@
 
     let selectedMedia = [];
     const removeSelectedMedia = () => {
+        if (queue) {
+            // Route through the owner so the bijection holds: find each selected
+            // transport's resolved item and remove item + payload TOGETHER.
+            selectedMedia.forEach(contents => {
+                const entry = queue.items.find(i => i.state === 'resolved'
+                    && session.staged.get(i.id)?.contents === contents);
+                if (entry) sessionOps.removeItem(entry);
+            });
+            selectedMedia = [];
+            return;
+        }
         selectedMedia.forEach(file => {
             localMediaList = localMediaList.filter(i => i.contents !== file);
-            selectedMedia = [];
         });
+        selectedMedia = [];
     }
 
     const getThumbnails = mediaList => mediaList.map(i => i.contents);
 
     // UNIVERSAL fix: every saved item enters the library as its PERSISTED PATH
     // (item.file), never its transport data URL (item.contents). Dedupe by path.
-    // Covers optimised derivatives AND raw passthrough (PDF/SVG/GIF/ordinary).
     const addUploadsToLibrary = () => {
         const savedPaths = localMediaList.map(item => item.file).filter(Boolean);
         media = [...new Set([...media, ...savedPaths])];
@@ -321,23 +360,31 @@
 </script>
 
 <div class="upload-wrapper">
+    {#if queue && (pendingReviewCount > 0 || failedItems.length > 0)}
+        <div class="queue-status">
+            {#if pendingReviewCount > 0}
+                <div>{pendingReviewCount} file{pendingReviewCount === 1 ? '' : 's'} still to review — finish or skip them before saving.</div>
+            {/if}
+            {#each failedItems as f (f.id)}
+                <div class="failed-row">
+                    <span class="failed-msg">⚠️ {f.file.name} — {f.error instanceof Error ? f.error.message : String(f.error || 'could not be processed')}</span>
+                    <button type="button" class="remove-failed" on:click|preventDefault={() => sessionOps.removeItem(f)}>Remove</button>
+                </div>
+            {/each}
+        </div>
+    {/if}
     {#if localMediaList.length > 0}
         <MediaFilters bind:media bind:enabledFilters singleSelect={true} {changingMedia} />
         <MediaGrid files={getThumbnails(localMediaList)} bind:selectedMedia={selectedMedia} />
-        {#if queue && queue.unresolvedCount > 0}
-            <div class="queue-status">
-                {queue.unresolvedCount} file{queue.unresolvedCount === 1 ? '' : 's'} still to review — finish or cancel them before saving.
-            </div>
-        {/if}
         <ButtonWrapper>
             <Button
-                on:click={() => {
+                afterSubmit={() => {
                     addUploadsToLibrary();
-                    resetQueueAfterSave();
+                    sessionOps?.endAfterSave();
                     enabledFilters=[];
                     filePrefix = mediaPrefix + "media/";
                     if(changingMedia) {
-                        changingMedia = localMediaList[0].file;
+                        changingMedia = localMediaList[0]?.file;
                         showMediaModal = false;
                     }
                 }}
@@ -346,6 +393,7 @@
                 action="create"
                 encoding="base64"
                 disabled={!canSave}
+                retainCommitListOnFailure={true}
                 {user}
             />
             {#if selectedMedia.length > 0}
@@ -356,7 +404,7 @@
                 />
             {:else}
                 <Button
-                    on:click="{() => { cancelAllUploads(); localMediaList=[]; }}"
+                    on:click="{() => { if (sessionOps) sessionOps.discardAll(); else localMediaList = []; }}"
                     buttonText="Discard all"
                     buttonStyle="secondary"
                 />
@@ -365,9 +413,9 @@
     {:else}
         <div class="upload-widgets">
             <div class="drop{drag ? ' active' : ''}"
-                on:dragenter={toggleDrag} 
-                on:dragleave={toggleDrag}  
-                on:drop|preventDefault={event => dropFile(event)} 
+                on:dragenter={toggleDrag}
+                on:dragleave={toggleDrag}
+                on:drop|preventDefault={event => dropFile(event)}
                 on:dragover|preventDefault
             >
                 <div class="drop-icon">
@@ -381,7 +429,11 @@
                 <div class="drop-text">Drag a file here to upload</div>
             </div>
             <div class="or">Or</div>
-            <div class="choose" on:change={event => selectFile(event.target.files)}>
+            <div class="choose" on:change={event => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = '';   // same-file re-selection must fire again
+                selectFile(files);
+            }}>
                 <label class="file">
                     <input type="file" multiple={!isFieldUpload} aria-label="File browser">
                     <span class="file-custom"></span>
@@ -392,21 +444,24 @@
 </div>
 
 {#if showCropModal}
-    <ImageCropModal
-        imageUrl={cropSourceUrl}
-        options={LIBRARY_OPTIMISE_DEFAULTS}
-        libraryMode={true}
-        allowCropToggle={!isFieldUpload}
-        confirmLabel={isFieldUpload ? 'Use optimised image' : 'Add optimised image'}
-        queuePosition={queuePosition}
-        cancelLabel={!isFieldUpload && queuePosition && queuePosition.total > 1 ? 'Skip this file' : 'Cancel'}
-        showCancelAll={!isFieldUpload && queuePosition && queuePosition.total > 1}
-        error={cropError}
-        {processing}
-        on:confirm={onLibraryCropConfirm}
-        on:cancel={onLibraryCropCancel}
-        on:cancelAll={cancelAllUploads}
-    />
+    {#key cropSourceUrl}
+        <ImageCropModal
+            imageUrl={cropSourceUrl}
+            options={LIBRARY_OPTIMISE_DEFAULTS}
+            libraryMode={true}
+            allowCropToggle={!isFieldUpload}
+            confirmLabel={isFieldUpload ? 'Use optimised image' : 'Add optimised image'}
+            queueMode={!!queue}
+            queuePosition={queuePosition}
+            cancelLabel={queue ? 'Skip this file' : 'Cancel'}
+            showCancelAll={!!queue && remainingSkippable > 1}
+            error={cropError || fieldNote}
+            {processing}
+            on:confirm={onLibraryCropConfirm}
+            on:cancel={onLibraryCropCancel}
+            on:cancelAll={onSkipRemaining}
+        />
+    {/key}
 {/if}
 
 <style>
@@ -425,6 +480,27 @@
         color: #7a6000;
         font-size: .85rem;
         text-align: center;
+    }
+    .failed-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 6px;
+        color: darkred;
+        text-align: left;
+    }
+    .failed-msg {
+        word-break: break-word;
+    }
+    .remove-failed {
+        flex: 0 0 auto;
+        border: 1px solid #e0c0c0;
+        border-radius: 4px;
+        background: #fff;
+        color: darkred;
+        padding: 3px 10px;
+        cursor: pointer;
     }
     .upload-widgets {
         display: flex;
