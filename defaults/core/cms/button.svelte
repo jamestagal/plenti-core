@@ -4,6 +4,9 @@
 
     export let commitList, shadowContent, buttonText, action, encoding, user, afterSubmit, beforeSubmit, status;
     export let buttonStyle = "primary";
+    // Optional external gate (e.g. Media uploads still under review): disables the
+    // button and short-circuits submit. Defaults false → existing call sites unchanged.
+    export let disabled = false;
 
     let confirmTooltip;
     const onSubmit = async () => {
@@ -66,11 +69,11 @@
             </div>
         </div>
     {/if}
-    <button 
-        on:click|preventDefault={() => action === "delete" ? confirmTooltip = true : action ? onSubmit() : null}
+    <button
+        on:click|preventDefault={() => disabled ? null : action === "delete" ? confirmTooltip = true : action ? onSubmit() : null}
         on:click
         type="submit"
-        disabled={status}
+        disabled={status || disabled}
         class="{status} {buttonStyle}"
     >
         {#if status == "sending"}

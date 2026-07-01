@@ -17,6 +17,13 @@
     export let libraryMode = false;
     export let allowCropToggle = false;
     export let confirmLabel = '';
+    // Standalone multi-file queue affordances (field call sites leave these off →
+    // pixel-identical to before). `queuePosition` = { index, total } (1-based) or null;
+    // `cancelLabel` overrides the primary Cancel text; a "Cancel all" button shows
+    // only when `showCancelAll` is set (dispatches 'cancelAll').
+    export let queuePosition = null;
+    export let cancelLabel = 'Cancel';
+    export let showCancelAll = false;
 
     const dispatch = createEventDispatcher();
     const MAX = 360; // max crop-box display edge (px)
@@ -142,6 +149,7 @@
         overrides: libraryMode ? { crop: wantCrop } : undefined,
     });
     const cancel = () => dispatch('cancel');
+    const cancelAll = () => dispatch('cancelAll');
 
     // Render at <body> level so the fixed overlay escapes the CMS edit-tray's
     // transform (which would otherwise become its containing block / clip it).
@@ -156,6 +164,9 @@
 <div class="crop-modal" use:portal on:mousedown|self={cancel}>
     <div class="panel">
         <h3>{doCrop ? 'Crop image' : 'Optimise image'}</h3>
+        {#if queuePosition && queuePosition.total > 1}
+            <p class="queue-pos">Image {queuePosition.index} of {queuePosition.total}</p>
+        {/if}
         <p class="hint">{doCrop ? 'Drag to pan • scroll or buttons to zoom' : 'Preview of the optimised output'}</p>
 
         {#if allowCropToggle}
@@ -196,7 +207,10 @@
         {#if error}<div class="err">⚠️ {error}</div>{/if}
 
         <div class="actions">
-            <button type="button" class="secondary" on:click|preventDefault={cancel} disabled={processing}>Cancel</button>
+            {#if showCancelAll}
+                <button type="button" class="ghost" on:click|preventDefault={cancelAll} disabled={processing}>Cancel all</button>
+            {/if}
+            <button type="button" class="secondary" on:click|preventDefault={cancel} disabled={processing}>{cancelLabel}</button>
             <button type="button" class="primary" on:click|preventDefault={confirm} disabled={processing}>
                 {processing ? 'Processing…' : (confirmLabel || (doCrop ? 'Apply crop' : 'Apply'))}
             </button>
@@ -225,6 +239,7 @@
         text-align: center;
     }
     h3 { margin: 0 0 4px; }
+    .queue-pos { margin: 0 0 4px; color: #1c7fc7; font-size: .8rem; font-weight: bold; }
     .hint { margin: 0 0 14px; color: #666; font-size: .85rem; }
     .crop-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px; font-size: .9rem; cursor: pointer; }
     .crop-toggle input { cursor: pointer; }
@@ -256,4 +271,5 @@
     .actions button { flex: 1; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
     .actions .primary { background: #1c7fc7; color: #fff; }
     .actions .secondary { background: #e7e7e7; }
+    .actions .ghost { background: transparent; color: darkred; border: 1px solid #e0c0c0; font-weight: normal; flex: 0 0 auto; padding: 10px 12px; }
 </style>
