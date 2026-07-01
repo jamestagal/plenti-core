@@ -233,4 +233,47 @@ The grid and every field value hold the **persisted path**, never a transport da
 
 **Stage 2 — HELD, pending Jim's decision (do NOT build until confirmed):** whether field schema options should keep **auto-processing** a selected image (the D10 behaviour + Jim's original `options:[{width,height,scale,crop,convert}]`), or become **placement-crop requirements only** — selecting media assigns the library asset unchanged and the field exposes an explicit **Crop** action. This would redefine `crop:false`/`scale`/`convert` field semantics — a public schema-contract change, so it is isolated behind this gate. The raw-File→`uploadContext` handoff is already done in Stage 1 and is **not** part of Stage 2.
 
-**Tests & evidence (all in `feat/image-crop`):** engine 27, gateway (`test-library-optimise.mjs`) 12, queue (`test-upload-queue.mjs`) 33, providers 22 — all green; `go build ./...` exit 0. Full traceability in [`docs/364-acceptance-matrix.md`](../364-acceptance-matrix.md); browser + remote-smoke evidence in [`docs/364-remote-smoke.md`](../364-remote-smoke.md).
+**Tests & evidence (all in `feat/image-crop`):** engine 27, gateway (`test-library-optimise.mjs`) 12, queue (`test-upload-queue.mjs`) 64, providers 22 — all green; `go build ./...` exit 0. Full traceability in [`docs/364-acceptance-matrix.md`](../364-acceptance-matrix.md); browser + remote-smoke evidence in [`docs/364-remote-smoke.md`](../364-remote-smoke.md).
+
+**D12 addendum — Slice 6 corrections (post-review hardening).** A high-effort code review of the
+first gateway implementation confirmed 15 findings, rooted in two unsynchronized ledgers (the
+queue's lifecycle vs the staged commit list) plus edge-path cancellation/remount gaps. The
+corrections, all verified in the browser matrix:
+
+- **Session ownership**: the upload session (queue + a keyed payload store,
+  queue-item id → transport) is owned by `media_modal.svelte` and SURVIVES Upload↔Library tab
+  switches; `file_upload.svelte` is a remountable view driving it through owner-controlled
+  operations (one reactive root — no per-mutation invalidation convention to forget).
+- **Single lifecycle ledger with keyed staged payloads**: resolving an item and staging its
+  transport is one atomic `complete()` (ownership check → stage → transition → rollback on
+  refusal → rebuild); the Save list is DERIVED from resolved items through the store, and the
+  Save gate fails closed if the bijection is ever breached.
+- **`skipRemaining()`** (UI: "Skip remaining") replaces `cancelAll()`: retains ONLY resolved
+  items — approved work stays savable — and drops pending AND failed items, so one unreadable
+  file can no longer brick a batch. **Failed items render in a persistent status area with a
+  Remove control** (the queue's `remove()` finally wired).
+- **Session-wide run claims** (`claimRun` → `{ itemId, token }` on the queue itself): a later
+  claim from any component instance invalidates an earlier chain, so a remount cannot double-
+  drive an item (browser-proven: a delayed read spanning a tab switch performed exactly ONE
+  read); teardown invalidates the claim so late completions are ignored — cancellation is
+  logical invalidation, not physical abort.
+- **Explicit teardown on modal close**: skip non-resolved → promote resolved payloads into the
+  surviving (admin_menu-owned) commit list → destroy queue + store. The queue-null Save
+  fallback can therefore only ever see approved payloads.
+- **`queueMode` is an explicit modal prop**: the backdrop dismiss is inert in queue mode (an
+  accidental click never skips a file) and inert while processing in field mode (a cancel can
+  never race an in-flight commit — closes the orphaned-committed-file path). The
+  Skip-remaining affordance derives from the count of actionable (skippable) items, never raw
+  batch length. `{#key}` remounts the crop modal per image (the Crop toggle and pan/zoom reset).
+- **`media[]` is mutated only after provider success** (Button's success-only `afterSubmit`),
+  and the shared Button gains an OPT-IN `retainCommitListOnFailure` so a failed Save Media keeps
+  the staged batch for retry (every other Button call site unchanged).
+- **Accepted residual** (documented): an outer-modal close during a FIELD eager-commit cannot
+  un-send the commit — a late success leaves an orphaned committed file with no path delivery
+  (same class as the D11 Gitea orphan; window ≈ one commit round-trip).
+- **Plenti pipeline constraint discovered**: `cmd/build/compile.go`'s regex import-rewriter
+  corrupts a component whose compiled SSR contains MORE THAN ONE printer-wrapped import (the
+  greedy multi-line branch spans from the first `import {` to the LAST line-start `} from`).
+  Mitigation in this branch: keep hand-written import lines under ~80 chars (noted in the
+  component). A proper Go-side fix (non-greedy/anchored matching) is upstream-worthy but out of
+  scope here.

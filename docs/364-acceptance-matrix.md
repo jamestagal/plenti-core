@@ -66,3 +66,21 @@ go build ./...                                            # Go + CMS embed
 Cases 12/13 have a remote dimension (real `upsert`=update on a live host, and the
 documented Gitea sequential partial-batch caveat) captured separately so this
 matrix stays runnable without network credentials.
+
+## Slice 6 revision (post-review hardening)
+
+A high-effort review confirmed 15 findings against the first implementation; Slice 6
+(commits `8442175`, `937c4de`, `185dcc2` + docs) fixes them. Rows affected:
+
+| # | Change |
+|---|---|
+| 4 | The STANDALONE side is now browser-proven too: a one-shot `/postlocal` 500 on Save Media leaves `media[]` unpolluted (mutation moved to Button's success-only `afterSubmit`), the staged batch is RETAINED (opt-in `retainCommitListOnFailure`), and the retry commits. |
+| 9 | Dedup is structural now: the Save list is DERIVED from resolved queue items through a keyed payload store (one payload per item id) — `addOrReplaceCommitItem` is gone. |
+| 15 | Labels updated: standalone queue Cancel = "Skip this file"; batch action = "Skip remaining" (retains approved work — drops pending AND failed). |
+| 17 | Cancellation semantics revised per owner decision: `skipRemaining()` spares resolved items (previously cancelAll stranded/flushed them — the review's top finding); failed items get a visible error + Remove control; the backdrop is inert in queue mode; teardown on modal close promotes resolved payloads and drops late completions via session-wide run claims. |
+| 20 | Suite counts now: engine 27, gateway 12, queue **64**, providers 22; `go build ./...` exit 0. |
+
+New browser-proven cases (see `364-remote-smoke.md` §A2): skip-remaining-spares-approved,
+resolved+failed+queued skip, failed-item Remove, single-image backdrop inert, per-image modal
+reset, session survives tab switch, cross-remount single-read (session-wide claim),
+teardown-during-processing drops the late result, field multi-drop notice, Save-failure retry.

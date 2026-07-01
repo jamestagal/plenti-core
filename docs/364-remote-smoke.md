@@ -45,6 +45,29 @@ deployment the provider write and the served origin are the same store; if it ev
 surfaces there, the fix is a cache-bust query on the crop modal's source — a
 one-line change deferred out of this hardening slice (no product-behaviour change).
 
+## A2. Slice 6 browser regression (post-review hardening)
+
+Same environment (fork binary serving `crop-fixture`, local mode). Failure injection via a
+FileReader patch (`FAIL-*` names error; `SLOW-*` delay 3s, with a per-name read counter) and a
+one-shot `/postlocal` 500 fetch patch.
+
+| Scenario | Result |
+|---|---|
+| Skip remaining spares approved work | approve image + auto-resolved PDF, "Skip remaining" on the next image → both stayed staged, Save ENABLED, committed; PDF byte-identical; skipped image never written |
+| resolved + failed + queued → Skip remaining | failed row AND queued dropped; resolved item alone remained, savable |
+| Failed item visible + recoverable | "⚠️ FAIL-doc.pdf — Failed to read blob" + Remove rendered persistently; Save disabled until Remove → then ENABLED with approved work intact |
+| Mixed one-image batch affordance | single image + queued PDF still shows "Skip remaining" (batch-based skippable count, not images-only) |
+| Single-image queue backdrop | inert ("queueMode" explicit — position display hidden, Skip-remaining hidden, modal stays) |
+| Per-image modal reset | Crop ticked on image 1 (heading "Crop image"); image 2 opened RESET ("Optimise image", unchecked) |
+| Session survives tab switch | Upload→Library→Upload mid-review: staged intact, awaiting image's modal re-bound |
+| Cross-remount single read | SLOW pdf read spanning a tab switch → read counter = **1**; payload staged once (session-wide claim, not per-instance counter) |
+| Teardown during processing | media modal closed mid-read → read completed but late result DROPPED (nothing staged, nothing on disk) |
+| Save failure → retry | one-shot 500: `media[]` unpolluted, staged batch retained past the 900ms reset AND across a tab switch; retry committed both files |
+| Field multi-drop | notice "Only one file can be used here — using <name>." shown; single file used; input `multiple=false` |
+| Field regression | backdrop at rest cancels (crop modal only); one-click "Use optimised image" → eager commit → media modal closes → field crop modal opens (Slice 2 handoff intact) |
+| File-input reset | `input.value === ''` immediately after selection (same-file re-selection fires) |
+| Invariants | content JSON `data:image` = 0; 0 blob-backed images after close; no app console errors; no bijection-violation logs |
+
 ## B. Live remote smoke (GitLab / Gitea) — to run against a real host
 
 The provider **request contract** is unit-tested with mocked `fetch`
