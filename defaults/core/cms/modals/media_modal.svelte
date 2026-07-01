@@ -1,8 +1,11 @@
 <script>
     import MediaBrowser from "../media_browser.svelte";
     import FileUpload from "../file_upload.svelte";
+    import { STANDALONE_UPLOAD_CONTEXT } from "../upload_context.js";
 
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
+    // Standalone unless a field opens the picker with its own context (Slice 2).
+    export let uploadContext = STANDALONE_UPLOAD_CONTEXT;
 
     let activeMedia = "upload";
     const setActiveMedia = selected => {
@@ -46,6 +49,7 @@
         bind:showMediaModal
         bind:localMediaList
         {mediaPrefix}
+        {uploadContext}
         {user}
       />
     {/if}

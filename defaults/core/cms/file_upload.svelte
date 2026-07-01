@@ -3,29 +3,110 @@
     import MediaGrid from './media_grid.svelte';
     import ButtonWrapper from './button_wrapper.svelte';
     import Button from './button.svelte';
-    import { get } from 'svelte/store';
-    import { fieldUploadHandler } from './field_upload.js';
+    import ImageCropModal from './fields/image_crop_modal.svelte';
+    import { transformImage, blobToDataURL, sourceExtension, LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
+    import { libraryFingerprint, libraryOutputPath } from './library_optimise.js';
+    import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
 
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
+    // Explicit upload context — NEVER inferred from changingMedia (a field with no
+    // current image has changingMedia === '', which would wrongly read as standalone).
+    //   { kind: 'standalone' }                         — top-nav Media library
+    //   { kind: 'field', onSavedPath(path) { … } }     — a field's "Change Media"
+    export let uploadContext = STANDALONE_UPLOAD_CONTEXT;
+    $: isFieldUpload = uploadContext?.kind === 'field';   // REACTIVE, not a cached const
     let enabledFilters = [];
 
-    const createMediaList = file => {
-        // Field-scoped upload: a schema-configured media field enforces its crop/
-        // scale/convert and commits only the derivative — hand it the File rather
-        // than taking the eager "Save Media" path that writes the original.
-        const handler = get(fieldUploadHandler);
-        if (handler) {
-            handler(file);
-            return;
+    // Only raster formats the canvas can encode go through the optimise gateway.
+    // MIME first; fall back to the filename extension ONLY when the MIME is absent
+    // or generic (a valid JPEG can have an empty type; but application/pdf named
+    // "x.jpg" must NOT be treated as an image).
+    function isCanvasCandidate(file) {
+        const mime = String(file?.type || '').toLowerCase();
+        const ext = sourceExtension(file?.name);
+        const MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+        const EXTS = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
+        if (MIMES.includes(mime)) return true;
+        if (mime && mime !== 'application/octet-stream') return false;
+        return EXTS.includes(ext);
+    }
+
+    // A committed transport item is deduped by its PATH so one save never carries
+    // two actions for the same file (new Set on media[] only dedupes the display).
+    function addOrReplaceCommitItem(item) {
+        const i = localMediaList.findIndex(x => x.file === item.file);
+        localMediaList = i === -1
+            ? [...localMediaList, item]
+            : localMediaList.map((x, k) => (k === i ? item : x));
+    }
+
+    // ── the optimise-gateway modal driver ─────────────────────────────────────
+    let showCropModal = false;
+    let cropSourceUrl = '';   // object URL the modal LOADS (revoked on confirm/cancel)
+    let cropSourceFile = null; // the File being optimised (for the fingerprint)
+    let sourcePath = '';      // media/<name> the OUTPUT path is derived from
+    let cropError = '';
+    let processing = false;
+
+    function revokeCropUrl() {
+        if (cropSourceUrl) { URL.revokeObjectURL(cropSourceUrl); cropSourceUrl = null; }
+    }
+    function optimiseLibraryFile(file) {
+        cropError = '';
+        cropSourceFile = file;
+        cropSourceUrl = URL.createObjectURL(file);
+        sourcePath = mediaPrefix + "media/" + file.name;
+        showCropModal = true;
+    }
+
+    async function onLibraryCropConfirm(event) {
+        if (processing) return;
+        processing = true;
+        cropError = '';
+        try {
+            const options = { ...LIBRARY_OPTIMISE_DEFAULTS, ...(event.detail.overrides || {}) };
+            const result = await transformImage(event.detail.image, event.detail.selection, options, sourcePath);
+            const fingerprint = await libraryFingerprint({ file: cropSourceFile, sourceRect: result.sourceRect, options });
+            const filePath = libraryOutputPath({
+                sourcePath, fingerprint,
+                width: result.width, height: result.height, mime: result.actualMime,
+            });
+            // The transport item — a data URL in `contents` (the provider strips the
+            // prefix); the derivative carries per-item action:'upsert'.
+            const item = {
+                action: 'upsert', encoding: 'base64',
+                file: filePath, contents: await blobToDataURL(result.blob),
+            };
+            addOrReplaceCommitItem(item);   // standalone: queue for the "Save Media" batch
+            revokeCropUrl();
+            showCropModal = false;
+        } catch (error) {
+            cropError = error instanceof Error ? error.message : 'The image could not be processed.';
+        } finally {
+            processing = false;
         }
-        let reader = new FileReader();
+    }
+    function onLibraryCropCancel() {
+        revokeCropUrl();
+        showCropModal = false;
+        cropError = '';
+    }
+
+    // Route a raw (non-canvas) file straight into the commit list as its PATH-named
+    // transport item (create). It still enters media[] as a PATH via addUploadsToLibrary.
+    function passthroughFile(file) {
+        const reader = new FileReader();
         reader.readAsDataURL(file);
-        reader.onload = e => {
-            localMediaList = [...localMediaList, {
-                file: mediaPrefix + "media/" + file.name,
-                contents: e.target.result
-            }];
-        };
+        reader.onload = e => addOrReplaceCommitItem({
+            action: 'create', encoding: 'base64',
+            file: mediaPrefix + "media/" + file.name, contents: e.target.result,
+        });
+    }
+
+    const createMediaList = file => {
+        // Images pass through the optimise gateway; everything else is saved raw.
+        if (isCanvasCandidate(file)) optimiseLibraryFile(file);
+        else passthroughFile(file);
     }
     const selectFile = files => {
         Array.from(files).forEach(file => {
@@ -74,10 +155,12 @@
 
     const getThumbnails = mediaList => mediaList.map(i => i.contents);
 
-    const addUploadToLibrary = () => {
-        localMediaList.forEach(m => {
-            media = [...media, m.contents];
-        });
+    // UNIVERSAL fix: every saved item enters the library as its PERSISTED PATH
+    // (item.file), never its transport data URL (item.contents). Dedupe by path.
+    // Covers optimised derivatives AND raw passthrough (PDF/SVG/GIF/ordinary).
+    const addUploadsToLibrary = () => {
+        const savedPaths = localMediaList.map(item => item.file).filter(Boolean);
+        media = [...new Set([...media, ...savedPaths])];
     }
 </script>
 
@@ -86,9 +169,9 @@
         <MediaFilters bind:media bind:enabledFilters singleSelect={true} {changingMedia} />
         <MediaGrid files={getThumbnails(localMediaList)} bind:selectedMedia={selectedMedia} />
         <ButtonWrapper>
-            <Button 
+            <Button
                 on:click={() => {
-                    addUploadToLibrary();
+                    addUploadsToLibrary();
                     enabledFilters=[];
                     filePrefix = mediaPrefix + "media/";
                     if(changingMedia) {
@@ -137,13 +220,24 @@
             <div class="or">Or</div>
             <div class="choose" on:change={event => selectFile(event.target.files)}>
                 <label class="file">
-                    <input type="file" multiple="{changingMedia ? false : true}" aria-label="File browser">
+                    <input type="file" multiple={!isFieldUpload} aria-label="File browser">
                     <span class="file-custom"></span>
                 </label>
             </div>
         </div>
     {/if}
 </div>
+
+{#if showCropModal}
+    <ImageCropModal
+        imageUrl={cropSourceUrl}
+        options={LIBRARY_OPTIMISE_DEFAULTS}
+        error={cropError}
+        {processing}
+        on:confirm={onLibraryCropConfirm}
+        on:cancel={onLibraryCropCancel}
+    />
+{/if}
 
 <style>
     .upload-wrapper {
