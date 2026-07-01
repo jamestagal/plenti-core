@@ -1,4 +1,5 @@
 <script>
+    import { createEventDispatcher } from "svelte";
     import MediaBrowser from "../media_browser.svelte";
     import FileUpload from "../file_upload.svelte";
     import { STANDALONE_UPLOAD_CONTEXT } from "../upload_context.js";
@@ -6,6 +7,9 @@
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
     // Standalone unless a field opens the picker with its own context (Slice 2).
     export let uploadContext = STANDALONE_UPLOAD_CONTEXT;
+
+    // Relay a field-launched save up to admin_menu (which owns close+reset+notify).
+    const dispatch = createEventDispatcher();
 
     let activeMedia = "upload";
     const setActiveMedia = selected => {
@@ -51,6 +55,7 @@
         {mediaPrefix}
         {uploadContext}
         {user}
+        on:saved={(e) => dispatch('fieldSaved', e.detail)}
       />
     {/if}
 </div>

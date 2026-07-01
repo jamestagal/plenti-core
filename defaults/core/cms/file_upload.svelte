@@ -3,12 +3,15 @@
     import MediaGrid from './media_grid.svelte';
     import ButtonWrapper from './button_wrapper.svelte';
     import Button from './button.svelte';
+    import { createEventDispatcher } from 'svelte';
     import ImageCropModal from './fields/image_crop_modal.svelte';
     import { transformImage, blobToDataURL, sourceExtension, LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
     import { libraryFingerprint, libraryOutputPath } from './library_optimise.js';
+    import { commit } from './providers/commit.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
 
     export let media, changingMedia, showMediaModal, localMediaList, mediaPrefix, user;
+    const dispatch = createEventDispatcher();   // 'saved' (filePath) on a field-launched save
     // Explicit upload context — NEVER inferred from changingMedia (a field with no
     // current image has changingMedia === '', which would wrongly read as standalone).
     //   { kind: 'standalone' }                         — top-nav Media library
@@ -77,9 +80,19 @@
                 action: 'upsert', encoding: 'base64',
                 file: filePath, contents: await blobToDataURL(result.blob),
             };
-            addOrReplaceCommitItem(item);   // standalone: queue for the "Save Media" batch
-            revokeCropUrl();
-            showCropModal = false;
+            if (isFieldUpload) {
+                // ONE click: eager commit now (no "Save Media"), then EMIT the persisted
+                // path to the modal owner (admin_menu) which adds it to the library,
+                // closes+resets the context, and hands it to the field. Once the commit
+                // succeeds, the UPLOAD has succeeded — field processing is the parent's.
+                await commit([item], null, item.action, item.encoding, user);
+                revokeCropUrl();
+                dispatch('saved', filePath);
+            } else {
+                addOrReplaceCommitItem(item);   // standalone: queue for the "Save Media" batch
+                revokeCropUrl();
+                showCropModal = false;
+            }
         } catch (error) {
             cropError = error instanceof Error ? error.message : 'The image could not be processed.';
         } finally {
@@ -92,15 +105,26 @@
         cropError = '';
     }
 
-    // Route a raw (non-canvas) file straight into the commit list as its PATH-named
-    // transport item (create). It still enters media[] as a PATH via addUploadsToLibrary.
+    // A raw (non-canvas) file: PDF/SVG/GIF. Standalone queues it for "Save Media";
+    // a field-launched passthrough eager-commits (create) then emits the path, the
+    // same one-click ownership order as an optimised image (admin_menu finishes it).
     function passthroughFile(file) {
+        const filePath = mediaPrefix + "media/" + file.name;
         const reader = new FileReader();
         reader.readAsDataURL(file);
-        reader.onload = e => addOrReplaceCommitItem({
-            action: 'create', encoding: 'base64',
-            file: mediaPrefix + "media/" + file.name, contents: e.target.result,
-        });
+        reader.onload = async e => {
+            const item = { action: 'create', encoding: 'base64', file: filePath, contents: e.target.result };
+            if (isFieldUpload) {
+                try {
+                    await commit([item], null, item.action, item.encoding, user);
+                    dispatch('saved', filePath);
+                } catch (error) {
+                    cropError = error instanceof Error ? error.message : 'The file could not be saved.';
+                }
+            } else {
+                addOrReplaceCommitItem(item);
+            }
+        };
     }
 
     const createMediaList = file => {

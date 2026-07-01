@@ -6,15 +6,33 @@
     import EditTray from "./edit_tray.svelte";
     import allMedia from '../../generated/media.js';
     import { env } from '../../generated/env.js';
+    import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
 
     let mediaPrefix = env.baseurl ? '' : '/';
     let media = allMedia.map(media => mediaPrefix + media);
 
     let showContentModal = false;
     let showMediaModal = false;
+    // Who opened the Media picker. media.svelte sets this to a field context in
+    // swapMedia(); the standalone Media button (below) resets it here. admin_menu
+    // OWNS the modal + library state, so it also owns the close/reset (see
+    // finishFieldUpload) — a child can't reset a prop it doesn't own.
+    let uploadContext = STANDALONE_UPLOAD_CONTEXT;
     const toggleMediaModal = () => {
         showMediaModal = !showMediaModal;
         changingMedia = "";
+        uploadContext = STANDALONE_UPLOAD_CONTEXT;   // standalone entry point
+    }
+
+    // A field-launched upload has been saved by the gateway (eager commit). Record
+    // the persisted PATH in the library, close+reset, THEN hand the path to the
+    // field's onSavedPath (capture-before-reset so the callback survives the reset).
+    const finishFieldUpload = (filePath) => {
+        const onSavedPath = uploadContext.onSavedPath;
+        if (filePath && !media.includes(filePath)) media = [...media, filePath];
+        showMediaModal = false;
+        uploadContext = STANDALONE_UPLOAD_CONTEXT;
+        void onSavedPath?.(filePath);
     }
 
     let showEditor = false;
@@ -102,13 +120,15 @@
 
 {#if showMediaModal}
   <ModalWrapper on:click={toggleMediaModal}>
-    <MediaModal 
+    <MediaModal
       bind:media
       bind:changingMedia
       bind:showMediaModal
       bind:localMediaList
       {mediaPrefix}
+      {uploadContext}
       {user}
+      on:fieldSaved={(e) => finishFieldUpload(e.detail)}
     />
   </ModalWrapper>
 {/if}
@@ -116,10 +136,11 @@
 <div class={showEditor ? "sidenav-wrapper" : ""}>
 {#if showEditor}
   <div transition:horizontalSlide|local class={showEditor ? "sidenav" : ""}>
-    <EditTray 
+    <EditTray
       bind:content
       bind:showMediaModal
       bind:changingMedia
+      bind:uploadContext
       bind:localMediaList
       bind:shadowContent
       {user}

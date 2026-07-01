@@ -2,10 +2,10 @@
     import { isImagePath, isDocPath } from '../media_checker.js';
     import { parseImageOptions, transformImage } from '../crop-engine.js';
     import { pendingMedia } from '../pending_media.js';
-    import { fieldUploadHandler } from '../field_upload.js';
     import ImageCropModal from './image_crop_modal.svelte';
 
     export let field, showMediaModal, changingMedia, localMediaList;
+    export let uploadContext;   // set to a field context in swapMedia(); admin_menu owns/resets it
     export let schema = null, parentKeys = null;
 
     // Resolve THIS field's schema config: the top-level key, else the parent
@@ -29,10 +29,6 @@
     $: canReprocess = !!imageOptions && isImagePath(fieldSrc);
     // Show a pending derivative's in-memory preview until it's saved to disk.
     $: displaySrc = ($pendingMedia, pendingMedia.previewUrl(fieldSrc)) || fieldSrc;
-
-    // Stop claiming field-scoped uploads once the media modal closes, so the
-    // standalone library / non-crop uploads keep their eager behaviour.
-    $: if (!showMediaModal) fieldUploadHandler.set(null);
 
     let showCropModal = false;
     let cropSourceUrl = '';   // URL the modal/transform LOADS (a path or blob: object URL)
@@ -63,13 +59,12 @@
         showCropModal = true;
     }
 
-    // #364 core: enforce the field's schema when a NEW image enters the field —
-    // an existing library pick (a path) handled here, or a fresh upload (a File)
-    // handled by handleUploadedFile below.
+    // #364 core: enforce the field's schema when a NEW image path enters the field
+    // — a Library-tab pick (via this changingMedia reactive) or a fresh upload
+    // (via onSavedPath after the gateway saves it). Both deliver a persisted PATH.
     let lastHandled;
     $: if (changingMedia && field === originalMedia && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
         lastHandled = changingMedia;
-        fieldUploadHandler.set(null);              // a library pick happened, not an upload
         handleNewSelection(changingMedia);
     }
     function handleNewSelection(newPath) {
@@ -82,23 +77,6 @@
             openCropFor(newPath, newPath, recrop, null);
         } else {
             optimiseToField(newPath, newPath, recrop, null);
-        }
-    }
-
-    // A configured field's FRESH upload (registered via fieldUploadHandler): the
-    // field enforces its schema and queues ONLY the derivative — the original is
-    // never eager-saved to media/.
-    async function handleUploadedFile(file) {
-        fieldUploadHandler.set(null);
-        showMediaModal = false;
-        if (!imageOptions) return;
-        const loadUrl = URL.createObjectURL(file); // load the not-yet-saved file
-        const namePath = 'media/' + file.name;      // name the output after the file
-        if (imageOptions.crop !== false) {
-            cropRevertTo = field;
-            openCropFor(loadUrl, namePath, null, loadUrl);
-        } else {
-            await optimiseToField(loadUrl, namePath, null, loadUrl);
         }
     }
 
@@ -157,13 +135,30 @@
         }
     }
 
+    // A field-launched UPLOAD was optimised + eagerly saved by the Media gateway,
+    // which handed back the persisted PATH (via admin_menu's finishFieldUpload).
+    // Feed that path into the SAME selection logic a Library-tab pick uses, so the
+    // field's schema processing (crop/optimise) still runs. This handler OWNS its
+    // errors — a field-processing failure is NOT an upload failure; the canonical
+    // asset is already safely in the library, so we keep the previous field value
+    // and surface a field error rather than claiming the upload failed.
+    async function onSavedPath(path) {
+        try {
+            await handleNewSelection(path);
+        } catch (error) {
+            cropError = error instanceof Error ? error.message : 'The selected image could not be applied to this field.';
+        }
+    }
+
     // --- media-swap entry point ---
     let originalMedia;
     const swapMedia = () => {
         originalMedia = field;
-        // Claim field-scoped uploads when this field enforces a schema, so a
-        // fresh upload is processed (not eager-saved). Cleared on modal close.
-        fieldUploadHandler.set(imageOptions ? handleUploadedFile : null);
+        // Open the Media picker with this field's context. A fresh upload flows
+        // through the gateway (optimise -> eager save -> persisted path) and comes
+        // back via onSavedPath; a Library pick flows through the changingMedia
+        // reactive. Either way the field only ever receives a path (never a File).
+        uploadContext = { kind: 'field', onSavedPath };
         changingMedia = fieldSrc;
         showMediaModal = true;
     }
