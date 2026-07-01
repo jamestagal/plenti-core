@@ -256,6 +256,9 @@
     <ImageCropModal
         imageUrl={cropSourceUrl}
         options={LIBRARY_OPTIMISE_DEFAULTS}
+        libraryMode={true}
+        allowCropToggle={!isFieldUpload}
+        confirmLabel={isFieldUpload ? 'Use optimised image' : 'Add optimised image'}
         error={cropError}
         {processing}
         on:confirm={onLibraryCropConfirm}

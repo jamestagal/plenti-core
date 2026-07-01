@@ -11,15 +11,28 @@
     export let options = {};
     export let error = '';
     export let processing = false;
+    // Library-gateway mode: shows the optimise preview by default with an OPTIONAL
+    // "Crop image" toggle (standalone only — field-launched keeps allowCropToggle
+    // false so the field's own placement crop is the single interactive step).
+    export let libraryMode = false;
+    export let allowCropToggle = false;
+    export let confirmLabel = '';
 
     const dispatch = createEventDispatcher();
     const MAX = 360; // max crop-box display edge (px)
 
-    $: doCrop = options?.crop !== false;
-    $: doScale = options?.scale !== false;
-    $: showGrid = options?.showGrid !== false;
-    $: showCoords = options?.showCoordinates !== false;
-    $: locked = !!(options?.width && options?.height) || (!!options?.aspectRatio && !!options?.lockAspectRatio);
+    // In library mode the user may toggle cropping; wantCrop overrides options.crop.
+    let wantCrop = false;
+    // Effective options everything downstream reads (doCrop, cropSize, outputDims,
+    // the confirm overrides). In library mode crop follows the toggle; elsewhere it
+    // is exactly the incoming options.
+    $: opts = libraryMode ? { ...options, crop: wantCrop } : options;
+
+    $: doCrop = opts?.crop !== false;
+    $: doScale = opts?.scale !== false;
+    $: showGrid = opts?.showGrid !== false;
+    $: showCoords = opts?.showCoordinates !== false;
+    $: locked = !!(opts?.width && opts?.height) || (!!opts?.aspectRatio && !!opts?.lockAspectRatio);
 
     function aspectOf(o) {
         if (!o) return null;
@@ -30,7 +43,7 @@
         }
         return null;
     }
-    $: aspect = aspectOf(options);
+    $: aspect = aspectOf(opts);
     // Crop box: matches the locked output aspect; square for free crop; square
     // preview frame when not cropping (image is contained inside).
     $: cropSize = doCrop && aspect
@@ -88,29 +101,46 @@
     // Reactive: recompute when pan/zoom/size change (deps referenced explicitly).
     $: sel = (pos, scale, natural, cropSize, imageElement ? selectionRect() : null);
 
-    // Displayed output dimensions per the crop x scale matrix.
+    // Displayed output dimensions — MUST mirror transformImage's matrix (crop-engine.js)
+    // so the readout matches what actually gets saved. Reads `opts` (the effective
+    // options), and — the fix — honours maxWidth/maxHeight (contain within a MAX edge),
+    // so an oversized source shows e.g. 2048×1229, not the source dims or a forced square.
     function outputDims(s) {
-        const cfgW = options?.width, cfgH = options?.height;
-        if (doScale) {
-            if (doCrop) {
-                const r = s || { width: cropSize.width, height: cropSize.height };
-                if (cfgW && cfgH) return { w: cfgW, h: cfgH };
-                if (cfgW) return { w: cfgW, h: Math.round(cfgW * r.height / r.width) };
-                if (cfgH) return { h: cfgH, w: Math.round(cfgH * r.width / r.height) };
-                return { w: r.width, h: r.height };
-            }
+        const cfgW = opts?.width, cfgH = opts?.height;
+        const maxW = opts?.maxWidth, maxH = opts?.maxHeight;
+        // The source-pixel rect we're producing from: the crop selection, else whole image.
+        const rect = (doCrop && s) ? s : { width: natural.w, height: natural.h };
+        if (!doScale) return { w: rect.width, h: rect.height };
+        if (maxW || maxH) {
+            // contain the rect within the max edge(s), never upscale
             let k = 1;
-            if (cfgW) k = Math.min(k, cfgW / natural.w);
-            if (cfgH) k = Math.min(k, cfgH / natural.h);
+            if (maxW) k = Math.min(k, maxW / rect.width);
+            if (maxH) k = Math.min(k, maxH / rect.height);
             k = Math.min(1, k);
-            return { w: Math.max(1, Math.round(natural.w * k)), h: Math.max(1, Math.round(natural.h * k)) };
+            return { w: Math.max(1, Math.round(rect.width * k)), h: Math.max(1, Math.round(rect.height * k)) };
         }
-        if (doCrop && s) return { w: s.width, h: s.height };
-        return { w: natural.w, h: natural.h };
+        if (doCrop) {
+            if (cfgW && cfgH) return { w: cfgW, h: cfgH };
+            if (cfgW) return { w: cfgW, h: Math.round(cfgW * rect.height / rect.width) };
+            if (cfgH) return { h: cfgH, w: Math.round(cfgH * rect.width / rect.height) };
+            return { w: rect.width, h: rect.height };
+        }
+        // crop:false, scale:true → contain whole image within cfgW/cfgH
+        let k = 1;
+        if (cfgW) k = Math.min(k, cfgW / natural.w);
+        if (cfgH) k = Math.min(k, cfgH / natural.h);
+        k = Math.min(1, k);
+        return { w: Math.max(1, Math.round(natural.w * k)), h: Math.max(1, Math.round(natural.h * k)) };
     }
     $: dims = natural.w ? outputDims(sel) : null;
 
-    const confirm = () => dispatch('confirm', { image: imageElement, selection: selectionRect() });
+    // In library mode, fold the crop toggle into `overrides` the parent merges over
+    // LIBRARY_OPTIMISE_DEFAULTS. crop:false selection is null (whole-image optimise).
+    const confirm = () => dispatch('confirm', {
+        image: imageElement,
+        selection: doCrop ? selectionRect() : null,
+        overrides: libraryMode ? { crop: wantCrop } : undefined,
+    });
     const cancel = () => dispatch('cancel');
 
     // Render at <body> level so the fixed overlay escapes the CMS edit-tray's
@@ -128,6 +158,13 @@
         <h3>{doCrop ? 'Crop image' : 'Optimise image'}</h3>
         <p class="hint">{doCrop ? 'Drag to pan • scroll or buttons to zoom' : 'Preview of the optimised output'}</p>
 
+        {#if allowCropToggle}
+            <label class="crop-toggle">
+                <input type="checkbox" bind:checked={wantCrop} />
+                Crop image
+            </label>
+        {/if}
+
         <div class="stage" class:dragging={isDragging} style="width:{cropSize.width}px;height:{cropSize.height}px;"
              on:mousedown|stopPropagation={startDrag}
              on:wheel|preventDefault|stopPropagation={(e) => zoom(e.deltaY > 0 ? -0.1 : 0.1)}>
@@ -142,7 +179,7 @@
         {#if showCoords && dims}
             <div class="readout">
                 {#if doScale}Output: {dims.w}×{dims.h}px{:else}Size: {dims.w}×{dims.h}px (source){/if}
-                {#if options?.convert} → {options.convert.toUpperCase()}{/if}
+                {#if opts?.convert} → {opts.convert.toUpperCase()}{/if}
                 {#if locked} • aspect locked{/if}
             </div>
         {/if}
@@ -161,7 +198,7 @@
         <div class="actions">
             <button type="button" class="secondary" on:click|preventDefault={cancel} disabled={processing}>Cancel</button>
             <button type="button" class="primary" on:click|preventDefault={confirm} disabled={processing}>
-                {processing ? 'Processing…' : (doCrop ? 'Apply crop' : 'Apply')}
+                {processing ? 'Processing…' : (confirmLabel || (doCrop ? 'Apply crop' : 'Apply'))}
             </button>
         </div>
     </div>
@@ -189,6 +226,8 @@
     }
     h3 { margin: 0 0 4px; }
     .hint { margin: 0 0 14px; color: #666; font-size: .85rem; }
+    .crop-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px; font-size: .9rem; cursor: pointer; }
+    .crop-toggle input { cursor: pointer; }
     .stage {
         position: relative;
         margin: 0 auto;
