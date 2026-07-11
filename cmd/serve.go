@@ -216,7 +216,10 @@ type localChange struct {
 	Action   string `json:"action" validate:"required,oneof=create update delete"`
 	Encoding string `json:"encoding" validate:"required,oneof=base64 text"`
 	File     string `json:"file" validate:"file-path"`
-	Contents string `json:"contents" validate:"required"`
+	// A delete carries no contents (the client sends only action/encoding/file),
+	// so a plain 'required' would 400 every local media delete — a pre-existing
+	// upstream flaw; contents stay mandatory for create/update.
+	Contents string `json:"contents" validate:"required_unless=Action delete"`
 }
 
 // mediaWriteExtensions mirrors the image + doc set in
