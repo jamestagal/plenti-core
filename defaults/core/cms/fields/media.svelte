@@ -27,7 +27,10 @@
     function setFieldSrc(newSrc) {
         field = (field && typeof field === 'object') ? { ...field, src: newSrc } : newSrc;
     }
-    $: canReprocess = !!imageOptions && isImagePath(fieldSrc);
+    // Only CROP is a field-level control (maintainer-confirmed #364): automatic
+    // scale/convert processing is silent — deterministic, applied on selection,
+    // skipped when the asset already conforms — so there is no Optimise button.
+    $: canCrop = !!imageOptions && imageOptions.crop !== false && isImagePath(fieldSrc);
     // Show a pending derivative's in-memory preview until it's saved to disk.
     $: displaySrc = ($pendingMedia, pendingMedia.previewUrl(fieldSrc)) || fieldSrc;
 
@@ -208,10 +211,14 @@
     {:else if isDocPath(fieldSrc)}
         <embed src="{displaySrc}" class="thumbnail" />
     {/if}
-    <button class="swap" on:click|preventDefault={swapMedia}>Change Media</button>
-    {#if canReprocess}
-        <button class="crop" on:click|preventDefault={openCrop}>{imageOptions.crop !== false ? 'Crop' : 'Optimise'}</button>
-    {/if}
+    <!-- Split hover actions (prototype visual, rebuilt): Change Media always;
+         an explicit Crop beside it only on crop-configured fields. -->
+    <div class="field-actions">
+        <button class="swap" on:click|preventDefault={swapMedia}>Change Media</button>
+        {#if canCrop}
+            <button class="crop" on:click|preventDefault={openCrop}>Crop</button>
+        {/if}
+    </div>
     {#if processing && !showCropModal}
         <div class="processing">Optimising…</div>
     {/if}
@@ -240,36 +247,34 @@
     .thumbnail {
         max-width: 200px;
     }
-    button.swap {
-        cursor: pointer;
+    .field-actions {
         position: absolute;
         top: 0;
         left: 0;
         width: 200px;
         height: 115px;
+        display: flex;
+        opacity: 0;
+        transition: opacity .15s;
+    }
+    .thumbnail-wrapper:hover .field-actions {
+        opacity: 1;
+    }
+    .field-actions button {
+        flex: 1 1 50%;
         border: 0;
-        background-color: transparent;
-        color: transparent;
-        font-size: 1.25rem;
-        transition: all .15s;
-    }
-    button.swap:hover {
-        background-color: rgba(0, 0, 0, .75);
-        color: white;
-    }
-    button.crop {
         cursor: pointer;
-        position: absolute;
-        bottom: 6px;
-        right: 6px;
-        border: 0;
-        border-radius: 4px;
-        padding: 5px 10px;
-        font-weight: bold;
-        background-color: #1c7fc7;
         color: white;
+        font-size: 1rem;
+        font-weight: bold;
     }
-    button.crop:hover {
+    .field-actions .swap {
+        background-color: rgba(0, 0, 0, .75);
+    }
+    .field-actions .crop {
+        background-color: #1c7fc7;
+    }
+    .field-actions .crop:hover {
         background-color: #15679f;
     }
     .processing {
