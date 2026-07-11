@@ -31,6 +31,9 @@
     // scale/convert processing is silent — deterministic, applied on selection,
     // skipped when the asset already conforms — so there is no Optimise button.
     $: canCrop = !!imageOptions && imageOptions.crop !== false && isImagePath(fieldSrc);
+    // Prototype affordance: when the current value is a crop derivative made this
+    // session (pendingMedia knows its source), the button reads "Re-crop Image".
+    $: cropLabel = ($pendingMedia, pendingMedia.sourceOf(fieldSrc)) ? 'Re-crop Image' : 'Crop Image';
     // Show a pending derivative's in-memory preview until it's saved to disk.
     $: displaySrc = ($pendingMedia, pendingMedia.previewUrl(fieldSrc)) || fieldSrc;
 
@@ -216,7 +219,7 @@
     <div class="field-actions">
         <button class="swap" on:click|preventDefault={swapMedia}>Change Media</button>
         {#if canCrop}
-            <button class="crop" on:click|preventDefault={openCrop}>Crop</button>
+            <button class="crop" on:click|preventDefault={openCrop}>{cropLabel}</button>
         {/if}
     </div>
     {#if processing && !showCropModal}
@@ -248,10 +251,13 @@
         max-width: 200px;
     }
     .field-actions {
+        /* Prototype geometry: the hover actions span the full field row (two
+           ~200px buttons side by side), not just the 200px thumbnail — keeps
+           "Change Media" / "Re-crop Image" legible at 1rem. */
         position: absolute;
         top: 0;
         left: 0;
-        width: 200px;
+        right: 0;
         height: 115px;
         display: flex;
         opacity: 0;
