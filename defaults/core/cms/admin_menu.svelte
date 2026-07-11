@@ -24,12 +24,13 @@
         uploadContext = STANDALONE_UPLOAD_CONTEXT;   // standalone entry point
     }
 
-    // A field-launched upload has been saved by the gateway (eager commit). Record
-    // the persisted PATH in the library, close+reset, THEN hand the path to the
-    // field's onSavedPath (capture-before-reset so the callback survives the reset).
+    // A field-launched upload has been STAGED (deferred, maintainer-confirmed
+    // #364): nothing is committed until the page save, so the library grid does
+    // NOT list the path yet — it appears once persisted. Close+reset, THEN hand
+    // the path to the field's onSavedPath (capture-before-reset so the callback
+    // survives the reset); the field previews it via pendingMedia meanwhile.
     const finishFieldUpload = (filePath) => {
         const onSavedPath = uploadContext.onSavedPath;
-        if (filePath && !media.includes(filePath)) media = [...media, filePath];
         showMediaModal = false;
         uploadContext = STANDALONE_UPLOAD_CONTEXT;
         void onSavedPath?.(filePath);

@@ -1,6 +1,7 @@
 <script>
     import { isImagePath, isDocPath } from '../media_checker.js';
     import { parseImageOptions, transformImage } from '../crop-engine.js';
+    import { conformsToImageOptions } from '../crop-engine.js';
     import { pendingMedia } from '../pending_media.js';
     import ImageCropModal from './image_crop_modal.svelte';
 
@@ -67,24 +68,47 @@
         lastHandled = changingMedia;
         handleNewSelection(changingMedia);
     }
-    function handleNewSelection(newPath) {
+    async function handleNewSelection(newPath) {
         const recrop = pendingMedia.sourceOf(newPath) ?? newPath;
+        // A just-staged (deferred) asset isn't served from media/ yet — LOAD it
+        // from its in-memory preview; the PATH stays the persisted identity.
+        const loadUrl = pendingMedia.previewUrl(newPath) ?? newPath;
         if (!imageOptions || !isImagePath(newPath)) {
             setFieldSrc(newPath);                  // ordinary field / non-image
-        } else if (imageOptions.crop !== false) {
+            return;
+        }
+        let probe;
+        try {
+            probe = await loadImage(loadUrl);
+        } catch (error) {
+            cropError = error instanceof Error ? error.message : 'The selected image could not be loaded.';
+            return;
+        }
+        // Maintainer-confirmed short-circuit (#364): an asset that already meets
+        // this field's spec is referenced directly — no derivative copy.
+        if (conformsToImageOptions(
+            { width: probe.naturalWidth, height: probe.naturalHeight, path: newPath },
+            imageOptions,
+        )) {
+            setFieldSrc(newPath);
+            return;
+        }
+        if (imageOptions.crop !== false) {
             cropRevertTo = field;
             setFieldSrc(newPath);                  // candidate; modal enforces the crop
-            openCropFor(newPath, newPath, recrop, null);
+            openCropFor(loadUrl, newPath, recrop, null);
         } else {
-            optimiseToField(newPath, newPath, recrop, null);
+            optimiseToField(loadUrl, newPath, recrop, null, probe);
         }
     }
 
     function openCrop() {
-        // Manual re-crop/optimise from the field's current value (cancel keeps it).
+        // Manual re-crop from the field's current value (cancel keeps it). The
+        // recrop source may itself be a deferred asset — load its preview blob.
         const src = pendingMedia.sourceOf(fieldSrc) ?? fieldSrc;
+        const loadUrl = pendingMedia.previewUrl(src) ?? src;
         cropRevertTo = undefined;
-        openCropFor(src, src, src, null);
+        openCropFor(loadUrl, src, src, null);
     }
     async function onCropConfirm(e) {
         if (processing) return;
@@ -115,14 +139,15 @@
     }
 
     // crop:false automatic optimisation (contain/convert), no modal. Keeps the
-    // previous field value untouched if the transform fails.
-    async function optimiseToField(loadUrl, namePath, recrop, objectUrl) {
+    // previous field value untouched if the transform fails. `preloaded` skips a
+    // second decode when the caller already probed the image (conformance check).
+    async function optimiseToField(loadUrl, namePath, recrop, objectUrl, preloaded) {
         if (processing) return;
         const previous = field;
         processing = true;
         cropError = '';
         try {
-            const image = await loadImage(loadUrl);
+            const image = preloaded ?? await loadImage(loadUrl);
             const result = await transformImage(image, null, imageOptions, namePath);
             pendingMedia.add(result.filePath, result.blob, recrop ?? result.filePath);
             setFieldSrc(result.filePath);

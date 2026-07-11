@@ -30,16 +30,19 @@ function createPendingMedia() {
 
     return {
         subscribe,
-        // Add or REPLACE a derivative, deduped by output path: re-cropping the
+        // Add or REPLACE a pending asset, deduped by output path: re-cropping the
         // same target replaces the blob (revoking the previous preview URL) and
-        // keeps the original sourcePath.
-        add(file, blob, sourcePath) {
+        // keeps the original sourcePath. `action` defaults to the provider-neutral
+        // 'upsert' (derivatives may legitimately re-derive an existing path);
+        // deferred RAW passthrough files pass 'create' so a same-name upload is
+        // still surfaced as a conflict, never silently overwritten.
+        add(file, blob, sourcePath, action = 'upsert') {
             update(list => {
                 const existing = list.find(i => i.file === file);
                 if (existing) revoke(existing);
                 return [
                     ...list.filter(i => i.file !== file),
-                    { file, blob, sourcePath, url: URL.createObjectURL(blob), committed: false },
+                    { file, blob, sourcePath, action, url: URL.createObjectURL(blob), committed: false },
                 ];
             });
         },
@@ -83,7 +86,7 @@ function createPendingMedia() {
         // it treats upsert as create).
         async toCommitItems() {
             return Promise.all(get(store).filter(i => !i.committed).map(async i => ({
-                action: 'upsert',
+                action: i.action ?? 'upsert',
                 encoding: 'base64',
                 file: i.file,
                 contents: await blobToDataURL(i.blob),

@@ -18,7 +18,7 @@
     import { transformImage, blobToDataURL } from './crop-engine.js';
     import { LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
     import { libraryFingerprint, libraryOutputPath } from './library_optimise.js';
-    import { commit } from './providers/commit.js';
+    import { pendingMedia } from './pending_media.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
     import { classifyFile } from './upload_queue.js';
 
@@ -79,9 +79,10 @@
         if (cropSourceUrl) { URL.revokeObjectURL(cropSourceUrl); cropSourceUrl = null; }
     }
 
-    // Derive the persisted TRANSPORT item for an optimised image derivative.
-    // Shared by both entry points: field-launched (single) and the standalone queue.
-    async function buildDerivativeItem({ image, selection, overrides, file, sourcePath }) {
+    // Transform + name a library derivative. Returns the pieces both flows need:
+    // the standalone queue builds a TRANSPORT (data URL) for its staged batch;
+    // the field flow stages the BLOB in pendingMedia (deferred to the page save).
+    async function deriveLibraryAsset({ image, selection, overrides, file, sourcePath }) {
         const options = { ...LIBRARY_OPTIMISE_DEFAULTS, ...(overrides || {}) };
         const result = await transformImage(image, selection, options, sourcePath);
         const fingerprint = await libraryFingerprint({ file, sourceRect: result.sourceRect, options });
@@ -89,8 +90,12 @@
             sourcePath, fingerprint,
             width: result.width, height: result.height, mime: result.actualMime,
         });
+        return { filePath, blob: result.blob };
+    }
+    async function buildDerivativeItem(args) {
+        const { filePath, blob } = await deriveLibraryAsset(args);
         // A data URL in `contents` (the provider strips the prefix); derivative → upsert.
-        return { action: 'upsert', encoding: 'base64', file: filePath, contents: await blobToDataURL(result.blob) };
+        return { action: 'upsert', encoding: 'base64', file: filePath, contents: await blobToDataURL(blob) };
     }
 
     // ── the queue driver ──────────────────────────────────────────────────────
@@ -179,18 +184,19 @@
         cropError = '';
         if (isFieldUpload) {
             try {
-                const transport = await buildDerivativeItem({
+                const { filePath, blob } = await deriveLibraryAsset({
                     image: event.detail.image, selection: event.detail.selection,
                     overrides: event.detail.overrides, file: cropSourceFile, sourcePath,
                 });
-                // ONE click: eager commit now (no "Save Media"), then EMIT the
-                // persisted path to the modal owner (admin_menu adds it to the
-                // library, closes+resets, hands it to the field). Once the commit
-                // succeeds, the UPLOAD has succeeded — field processing is the
-                // parent's own concern.
-                await commit([transport], null, transport.action, transport.encoding, user);
+                // DEFERRED (maintainer-confirmed, #364): stage the canonical asset
+                // in pendingMedia instead of committing now. It flushes WITH the
+                // page save — canonical + any placement derivative + content land
+                // in ONE commit, and an abandoned edit persists nothing. The modal
+                // owner (admin_menu) closes+resets and hands the PATH to the field;
+                // the field previews it via pendingMedia until it is persisted.
+                pendingMedia.add(filePath, blob, filePath);
                 revokeCropUrl();
-                dispatch('saved', transport.file);
+                dispatch('saved', filePath);
             } catch (error) {
                 cropError = error instanceof Error ? error.message : 'The image could not be processed.';
             } finally {
@@ -261,16 +267,13 @@
         sourcePath = mediaPrefix + "media/" + file.name;
         showCropModal = true;
     }
-    async function passthroughFieldFile(file) {
+    function passthroughFieldFile(file) {
         const filePath = mediaPrefix + "media/" + file.name;
-        try {
-            const contents = await blobToDataURL(file);
-            const item = { action: 'create', encoding: 'base64', file: filePath, contents };
-            await commit([item], null, item.action, item.encoding, user);
-            dispatch('saved', filePath);
-        } catch (error) {
-            cropError = error instanceof Error ? error.message : 'The file could not be saved.';
-        }
+        // DEFERRED raw passthrough (a File IS a Blob): stages in pendingMedia and
+        // flushes with the page save. action 'create' preserves the
+        // no-silent-overwrite rule — a same-name conflict surfaces at save time.
+        pendingMedia.add(filePath, file, filePath, 'create');
+        dispatch('saved', filePath);
     }
 
     // Entry point for BOTH input-change and drag-drop. Field-launched is
