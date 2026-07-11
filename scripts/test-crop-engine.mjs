@@ -38,7 +38,8 @@ globalThis.document = {
 };
 
 const src = await readFile(new URL('../defaults/core/cms/crop-engine.js', import.meta.url), 'utf8');
-const { sourceExtension, extToMime, parseImageOptions, renderImage, outputFilename, transformImage } =
+const { sourceExtension, extToMime, parseImageOptions, renderImage, outputFilename, transformImage,
+        conformsToImageOptions } =
     await import('data:text/javascript,' + encodeURIComponent(src));
 
 let pass = 0, fail = 0;
@@ -132,6 +133,26 @@ res = await transformImage(img, { x: 0, y: 0, width: 300, height: 200 }, { crop:
 eq([res.width, res.height], [300, 200], 'C-MAX3 within-max source is not upscaled');
 // C-MAX4: mixing exact dims with max dims is rejected.
 await throwsAsync(() => transformImage(img, { x: 0, y: 0, width: 400, height: 300 }, { crop: true, scale: true, width: 400, height: 300, maxWidth: 2048 }, 'media/p.png'), 'C-MAX4 exact + max dims rejected');
+
+// --- conformance short-circuit (#364, maintainer-confirmed: reference conforming assets, no copy) ---
+const conf = (w, h, path, opts) => conformsToImageOptions({ width: w, height: h, path }, opts);
+// C-CONF1: crop:true + both dims -> exact match conforms; off-by-one does not.
+eq(conf(500, 300, 'media/a.webp', { crop: true, scale: true, width: 500, height: 300, convert: 'webp' }), true, 'C-CONF1 exact dims + format conform');
+eq(conf(500, 301, 'media/a.webp', { crop: true, scale: true, width: 500, height: 300, convert: 'webp' }), false, 'C-CONF1b off-by-one height does not conform');
+// C-CONF2: crop:true without BOTH dims is underdetermined -> never conforms.
+eq(conf(500, 300, 'media/a.webp', { crop: true, scale: true, width: 500, convert: 'webp' }), false, 'C-CONF2 one-dim crop never conforms');
+eq(conf(500, 300, 'media/a.webp', { crop: true, scale: false }), false, 'C-CONF2b free crop never conforms');
+// C-CONF3: crop:false + scale -> within bounds conforms (contain never upscales); over bounds does not.
+eq(conf(400, 300, 'media/a.webp', { crop: false, scale: true, width: 500, height: 500, convert: 'webp' }), true, 'C-CONF3 within contain bounds conforms');
+eq(conf(800, 300, 'media/a.webp', { crop: false, scale: true, width: 500, height: 500, convert: 'webp' }), false, 'C-CONF3b over a bound does not conform');
+eq(conf(2048, 1229, 'media/a.webp', { crop: false, scale: true, maxWidth: 2048, maxHeight: 2048, convert: 'webp' }), true, 'C-CONF3c maxW/H bounds honoured (library defaults shape)');
+// C-CONF4: format gate — convert set requires matching extension; jpg/jpeg are one format.
+eq(conf(400, 300, 'media/a.png', { crop: false, scale: true, width: 500, height: 500, convert: 'webp' }), false, 'C-CONF4 wrong format does not conform');
+eq(conf(400, 300, 'media/a.jpeg', { crop: false, scale: false, convert: 'jpg' }), true, 'C-CONF4b jpeg conforms to convert:jpg');
+eq(conf(400, 300, 'media/a.png', { crop: false, scale: false }), true, 'C-CONF4c no convert -> format always conforms');
+// C-CONF5: scale:false -> format-only spec; missing dims -> never conforms.
+eq(conf(9999, 9999, 'media/a.webp', { crop: false, scale: false, convert: 'webp' }), true, 'C-CONF5 scale:false ignores dimensions');
+eq(conf(0, 300, 'media/a.webp', { crop: false, scale: false }), false, 'C-CONF5b unknown dims never conform');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

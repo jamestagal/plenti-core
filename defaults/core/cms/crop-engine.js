@@ -98,6 +98,54 @@ export function parseImageOptions(schema, fieldKey) {
 }
 
 /**
+ * Does an EXISTING asset already satisfy a field's image options — such that
+ * selecting it should reference the original with NO derivative copy? (#364,
+ * maintainer-confirmed: "if the image already meets the specifications …
+ * just reference the existing image and not make a copy".)
+ *
+ * Deliberately conservative — true only when the spec fully determines the
+ * outcome without user input:
+ *  - format: when `convert` is set the source extension must already match
+ *    (jpg/jpeg treated as one); no `convert` → format always conforms.
+ *  - crop:true with BOTH width & height → exact dimension match required.
+ *  - crop:true WITHOUT both dims (free/one-dim crop) → never conforms — the
+ *    output depends on a user selection we cannot infer.
+ *  - crop:false, scale:true → conforms when already within the configured
+ *    bounds (contain semantics never upscale, so "within" means "unchanged").
+ *  - crop:false, scale:false → dimensions always conform (format-only check).
+ *
+ * @param {{width:number, height:number, path:string}} asset natural dims + path
+ * @param {?object} opts parseImageOptions() output (or a compatible shape)
+ */
+export function conformsToImageOptions(asset, opts) {
+    if (!opts || !asset) return false;
+    const w = positiveIntOrNull(asset.width);
+    const h = positiveIntOrNull(asset.height);
+    if (!w || !h) return false;
+
+    if (opts.convert) {
+        const dejpeg = e => (e === 'jpeg' ? 'jpg' : e);
+        const want = dejpeg(normalizeFormat(opts.convert) || '');
+        const have = dejpeg(sourceExtension(asset.path));
+        if (!want || !have || want !== have) return false;
+    }
+
+    const cfgW = positiveIntOrNull(opts.width);
+    const cfgH = positiveIntOrNull(opts.height);
+    const maxW = positiveIntOrNull(opts.maxWidth);
+    const maxH = positiveIntOrNull(opts.maxHeight);
+
+    if (opts.crop !== false) {
+        if (!(cfgW && cfgH)) return false;          // underdetermined crop — never short-circuit
+        return w === cfgW && h === cfgH;
+    }
+    if (opts.scale === false) return true;          // format-only spec
+    if (maxW || maxH) return (!maxW || w <= maxW) && (!maxH || h <= maxH);
+    if (cfgW || cfgH) return (!cfgW || w <= cfgW) && (!cfgH || h <= cfgH);
+    return true;                                    // scale:true but no bounds configured
+}
+
+/**
  * Low-level: crop + scale + convert in a single drawImage pass.
  * @param {HTMLImageElement} img loaded source (naturalWidth/Height).
  * @param {?{x,y,width,height}} selection source-pixel rect; null = whole image.
