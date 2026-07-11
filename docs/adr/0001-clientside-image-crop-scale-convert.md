@@ -277,3 +277,41 @@ corrections, all verified in the browser matrix:
   Mitigation in this branch: keep hand-written import lines under ~80 chars (noted in the
   component). A proper Go-side fix (non-greedy/anchored matching) is upstream-worthy but out of
   scope here.
+
+---
+
+**D13 — The maintainer-confirmed model (closes the D12 Stage-2 gate).** Jim answered the
+schema/architecture question on #364 (comment thread, 2026-07-03) and confirmed the UX
+consequence; the "Stage 2" placeholder semantics are superseded by this confirmed model,
+implemented on this branch:
+
+- **Selection into a schema-configured field auto-processes** (his choice — the D10 semantics
+  Stage 1 preserved turn out to be the confirmed direction), with a NEW **conformance
+  short-circuit**: an asset that already meets the field's spec is referenced directly, no
+  derivative copy (`conformsToImageOptions` — conservative: `convert` requires a matching
+  extension with jpg/jpeg as one format; `crop:true` needs BOTH dims and an exact match;
+  underdetermined crops never short-circuit; `crop:false`+`scale` conforms within bounds;
+  `scale:false` is format-only).
+- **Field-launched uploads are DEFERRED** (his "consolidate media swapping to one commit"):
+  the gateway still optimises clientside immediately, but the canonical asset is staged in
+  `pendingMedia` and flushes WITH the page save — canonical + any placement derivative +
+  content in ONE commit; an abandoned edit persists nothing. Deferred RAW passthrough keeps
+  per-item `action:'create'` (a same-name conflict still surfaces at save — never a silent
+  overwrite). **Standalone Media-Library uploads keep the explicit eager "Save Media" batch**
+  (no page-save moment exists there) — D12's eager-save scope narrows to exactly that surface.
+- **Field UX (confirmed)**: automatic `scale`/`convert` is silent — deterministic, applied on
+  selection, conformance-skipped — so there is **no Optimise button**. Crop-configured fields
+  expose one explicit **Crop** action beside Change Media in a split hover overlay (the
+  original prototype's visual, rebuilt); ordinary and `crop:false` fields show Change Media
+  only.
+- **Terminology reconciled** (his question): *optimise* = the no-interaction ingestion bundle
+  (downscale-to-max `scale` + `convert` + quality); *convert* is one ingredient; *crop* is the
+  one interactive operation.
+- Side effect: the Slice-5 "just-committed WebP `<img>` race" caveat is structurally gone for
+  the field flow — deferred assets always render from in-memory blobs until persisted.
+
+Browser-proven on the fixture: field upload stages with ZERO commits; the page save issues
+exactly ONE `/postlocal` request carrying `update:content + canonical + placement derivative`;
+reload-before-save persists nothing; the conformance short-circuit assigned a 5000×3000 JPEG
+directly into a `convert:'jpg', scale:false` field (no copy, no commit); standalone Save Media
+unchanged (eager batch); no Optimise control anywhere; engine suite 39 (12 conformance cases).

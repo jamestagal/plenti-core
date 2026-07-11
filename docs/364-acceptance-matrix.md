@@ -84,3 +84,17 @@ New browser-proven cases (see `364-remote-smoke.md` §A2): skip-remaining-spares
 resolved+failed+queued skip, failed-item Remove, single-image backdrop inert, per-image modal
 reset, session survives tab switch, cross-remount single-read (session-wide claim),
 teardown-during-processing drops the late result, field multi-drop notice, Save-failure retry.
+
+## Slice 7 revision (the maintainer-confirmed model — ADR D13)
+
+Commits `b058d88` (upstream #375 merge), `796c7db`, `a7a9ca4`, `1c00748`. Behavioural changes:
+
+| Area | Change |
+|---|---|
+| Case 5 (field auto-return) | Field-launched uploads now DEFER: the canonical stages in `pendingMedia` and flushes with the page save — content + canonical + placement derivative in ONE commit (browser-proven: one `/postlocal` with all three). The eager one-click commit is gone; case 4's field-side provider-failure path moves to the page-save Button (already covered). |
+| Case 10 | Unchanged (one interactive crop) — and the field crop modal now loads deferred assets from in-memory blobs (the §A "same-session `<img>` race" caveat is structurally gone for this flow). |
+| Case 11 (field passthrough) | Deferred with per-item `action:'create'` retained — a same-name conflict surfaces at page save, never a silent overwrite. |
+| NEW: conformance | `conformsToImageOptions` short-circuit: a conforming asset is referenced directly (no derivative, no commit). Engine suite 27 → **39**. |
+| NEW: abandoned edit | Reload before page save persists NOTHING (browser-proven). |
+| Field UX | No Optimise button anywhere; crop-configured fields show one explicit Crop beside Change Media (split hover). |
+| Standalone | Unchanged: explicit eager "Save Media" batch (browser-proven post-change). |
