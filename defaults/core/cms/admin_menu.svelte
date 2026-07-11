@@ -1,5 +1,6 @@
 <script>
     export let user, content, shadowContent;
+    import { onMount } from 'svelte';
     import ModalWrapper from "./modals/modal_wrapper.svelte";
     import MediaModal from "./modals/media_modal.svelte";
     import ContentModal from "./modals/content_modal.svelte";
@@ -7,6 +8,13 @@
     import allMedia from '../../generated/media.js';
     import { env } from '../../generated/env.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
+    import { startPreviewPatcher } from './preview_patcher.js';
+
+    // Deferred media (pendingMedia) exists only as in-memory blobs until the
+    // page save — swap the PAGE's own <img>/<embed> to those previews so the
+    // live preview stays truthful. Mounted here: the CMS root outlives every
+    // remountable view; onMount's return disconnects on logout/destroy.
+    onMount(() => startPreviewPatcher());
 
     let mediaPrefix = env.baseurl ? '' : '/';
     let media = allMedia.map(media => mediaPrefix + media);

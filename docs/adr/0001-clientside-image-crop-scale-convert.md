@@ -310,6 +310,15 @@ implemented on this branch:
   one interactive operation.
 - Side effect: the Slice-5 "just-committed WebP `<img>` race" caveat is structurally gone for
   the field flow — deferred assets always render from in-memory blobs until persisted.
+- **Addendum (owner manual review, 2026-07-12) — the PAGE preview is now truthful too.** The
+  first D13 pass only wired `pendingMedia` previews into the CMS field widget; the user's own
+  page markup rendered the deferred PATH and showed a broken image until page save —
+  contradicting the "clientside immediately (so the page preview is truthful)" commitment.
+  `preview_patcher.js` (mounted at the CMS root, `admin_menu`) swaps any page `<img>`/`<embed>`
+  whose src is a pending path to the entry's object URL and restores the original when the
+  entry leaves the store; a MutationObserver covers page rerenders. Same review also made the
+  field-error surface legible on dark trays (it rendered darkred-on-dark, so a failed selection
+  looked like a silent no-op).
 
 Browser-proven on the fixture: field upload stages with ZERO commits; the page save issues
 exactly ONE `/postlocal` request carrying `update:content + canonical + placement derivative`;

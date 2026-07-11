@@ -294,7 +294,13 @@
         font-weight: bold;
     }
     .field-error {
-        color: darkred;
+        /* The edit tray inherits the site's (often dark) background — darkred
+           was unreadable there, which made a failed selection look like a
+           silent no-op. Needs to stay legible on light AND dark trays. */
+        color: #e05252;
+        background: rgba(255, 255, 255, .9);
+        border-radius: 3px;
+        padding: 4px 6px;
         font-size: .85rem;
         margin-top: 4px;
     }

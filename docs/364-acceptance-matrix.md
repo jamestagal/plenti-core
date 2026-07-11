@@ -98,3 +98,4 @@ Commits `b058d88` (upstream #375 merge), `796c7db`, `a7a9ca4`, `1c00748`. Behavi
 | NEW: abandoned edit | Reload before page save persists NOTHING (browser-proven). |
 | Field UX | No Optimise button anywhere; crop-configured fields show one explicit Crop beside Change Media (split hover). |
 | Standalone | Unchanged: explicit eager "Save Media" batch (browser-proven post-change). |
+| NEW: page preview (owner-review find) | The PAGE's own `<img>`/`<embed>` rendering a deferred path showed a broken image until page save. `preview_patcher.js` (CMS root) swaps pending paths to blob previews and restores originals when entries leave the store. Browser-proven: page hero renders the cropped derivative pre-save; the one-commit save lands content + derivative; post-save the blob covers the freshly-written path (no broken flash). Field-error text also made legible on dark trays. |
