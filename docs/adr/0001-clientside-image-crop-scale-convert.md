@@ -318,7 +318,11 @@ implemented on this branch:
   whose src is a pending path to the entry's object URL and restores the original when the
   entry leaves the store; a MutationObserver covers page rerenders. Same review also made the
   field-error surface legible on dark trays (it rendered darkred-on-dark, so a failed selection
-  looked like a silent no-op).
+  looked like a silent no-op). A second review pass extended the same session-truthfulness
+  principle to the Library: a page save now appends the just-persisted derivative paths to the
+  in-session `media[]` (deduped, `mediaPrefix`-normalised) instead of waiting for a reload to
+  pick up the regenerated media list — the patcher's blob covers the new grid tile while the
+  site rebuild races the disk write.
 
 Browser-proven on the fixture: field upload stages with ZERO commits; the page save issues
 exactly ONE `/postlocal` request carrying `update:content + canonical + placement derivative`;

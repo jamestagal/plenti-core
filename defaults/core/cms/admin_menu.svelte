@@ -9,6 +9,7 @@
     import { env } from '../../generated/env.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
     import { startPreviewPatcher } from './preview_patcher.js';
+    import { pendingMedia } from './pending_media.js';
 
     // Deferred media (pendingMedia) exists only as in-memory blobs until the
     // page save — swap the PAGE's own <img>/<embed> to those previews so the
@@ -60,6 +61,21 @@
 
     let changingMedia = "";
     let localMediaList = [];
+
+    // A successful page save persists deferred derivatives (markCommitted flips
+    // their flag) — append them to the in-session Library immediately, the way
+    // the standalone Save Media batch already does (addUploadsToLibrary).
+    // Without this the new asset only appears after a reload picks up the
+    // regenerated media list. Entries keep their preview blobs, so the preview
+    // patcher covers the grid tile while the site rebuild races the disk file.
+    // Settles in one pass: the guarded assignment adds nothing on re-run.
+    $: {
+        const saved = $pendingMedia
+            .filter(i => i.committed)
+            .map(i => (i.file.startsWith(mediaPrefix) ? i.file : mediaPrefix + i.file))
+            .filter(p => !media.includes(p));
+        if (saved.length) media = [...media, ...saved];
+    }
 </script>
 
 <div class="spacer"></div>
