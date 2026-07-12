@@ -17,6 +17,7 @@
     import ImageCropModal from './fields/image_crop_modal.svelte';
     import { transformImage, blobToDataURL } from './crop-engine.js';
     import { LIBRARY_OPTIMISE_DEFAULTS } from './crop-engine.js';
+    import { conformsToImageOptions } from './crop-engine.js';
     import { libraryFingerprint, libraryOutputPath } from './library_optimise.js';
     import { pendingMedia } from './pending_media.js';
     import { STANDALONE_UPLOAD_CONTEXT } from './upload_context.js';
@@ -77,6 +78,28 @@
     // FIELD mode only — standalone URLs belong to the queue's lifecycle.
     function revokeCropUrl() {
         if (cropSourceUrl) { URL.revokeObjectURL(cropSourceUrl); cropSourceUrl = null; }
+    }
+
+    // ── ingestion conformance (#364, owner-confirmed) ─────────────────────────
+    // A source that ALREADY meets the library defaults (target format, within
+    // the max edge) must never be silently re-encoded: a deliberately
+    // pre-optimised asset (e.g. an aggressively compressed 15 KB WebP) can come
+    // out LARGER from the canvas. Such files are offered/added AS-IS — original
+    // bytes, ORIGINAL name (the raw-passthrough naming contract, not the hashed
+    // derivative identity), action 'create' so a same-name conflict surfaces.
+    function loadProbeImage(src) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Could not load the image.'));
+            img.src = src;
+        });
+    }
+    function conformsToLibraryDefaults(probe, name) {
+        return conformsToImageOptions(
+            { width: probe.naturalWidth, height: probe.naturalHeight, path: name },
+            LIBRARY_OPTIMISE_DEFAULTS,
+        );
     }
 
     // Transform + name a library derivative. Returns the pieces both flows need:
@@ -147,6 +170,19 @@
             // async work is in flight while awaiting, so release the claim —
             // the confirm handler claims its own run.
             if (!q.prepare(item)) { q.clearRun(item, token); return; }
+            // One-time conformance probe (flag travels on the item, so it
+            // survives remounts). An unreadable image is NOT marked conforming
+            // — it falls through to the modal, which surfaces the load error.
+            if (item.conformsToLibrary === undefined) {
+                let conforms = false;
+                try {
+                    conforms = conformsToLibraryDefaults(
+                        await loadProbeImage(item.objectUrl), item.file.name);
+                } catch (_) { /* leave false */ }
+                // The claim may have been lost while probing (teardown/remount).
+                if (session?.queue !== q || !q.ownsRun(item, token)) return;
+                item.conformsToLibrary = conforms;
+            }
             q.awaitDecision(item);
             q.clearRun(item, token);
             bindImageModal(item);
@@ -211,11 +247,20 @@
         const token = q ? q.claimRun(item) : null;
         if (!token) { processing = false; return; }
         try {
-            const transport = await buildDerivativeItem({
-                image: event.detail.image, selection: event.detail.selection,
-                overrides: event.detail.overrides, file: item.file,
-                sourcePath: mediaPrefix + "media/" + item.file.name,
-            });
+            // Conforming item confirmed WITHOUT a crop → add the ORIGINAL BYTES
+            // under the original name ('create': a same-name conflict surfaces
+            // at save, never a silent overwrite). Ticking Crop opts back into
+            // the derivative flow — cropping inherently re-encodes.
+            const addAsIs = item.conformsToLibrary === true && !event.detail.selection;
+            const transport = addAsIs
+                ? { action: 'create', encoding: 'base64',
+                    file: mediaPrefix + "media/" + item.file.name,
+                    contents: await blobToDataURL(item.file) }
+                : await buildDerivativeItem({
+                    image: event.detail.image, selection: event.detail.selection,
+                    overrides: event.detail.overrides, file: item.file,
+                    sourcePath: mediaPrefix + "media/" + item.file.name,
+                });
             if (session?.queue !== q || !q.ownsRun(item, token)) { processing = false; return; }
             sessionOps.complete(item, token, transport);   // ATOMIC resolve+stage
         } catch (error) {
@@ -267,6 +312,21 @@
         sourcePath = mediaPrefix + "media/" + file.name;
         showCropModal = true;
     }
+    // Ingestion conformance, field flavour: an already-conforming image skips
+    // the optimise modal entirely and defers AS-IS through the raw-passthrough
+    // path (original bytes + name, 'create'). The field's own selection logic
+    // still applies its schema — a crop-configured field opens its placement
+    // crop on the returned path exactly as for a Library pick.
+    async function routeFieldImage(file) {
+        const url = URL.createObjectURL(file);
+        let conforms = false;
+        try {
+            conforms = conformsToLibraryDefaults(await loadProbeImage(url), file.name);
+        } catch (_) { /* unreadable → the modal surfaces the load error */ }
+        URL.revokeObjectURL(url);
+        if (conforms) passthroughFieldFile(file);
+        else optimiseLibraryFile(file);
+    }
     function passthroughFieldFile(file) {
         const filePath = mediaPrefix + "media/" + file.name;
         // DEFERRED raw passthrough (a File IS a Blob): stages in pendingMedia and
@@ -288,7 +348,7 @@
             // (string concat, not a template literal — Plenti's SSR regex pipeline
             // mishandles user template literals nested in the render output)
             fieldNote = list.length > 1 ? 'Only one file can be used here — using ' + file.name + '.' : '';
-            if (classifyFile(file) === 'image') optimiseLibraryFile(file);
+            if (classifyFile(file) === 'image') void routeFieldImage(file);
             else passthroughFieldFile(file);
             return;
         }
@@ -453,7 +513,9 @@
             options={LIBRARY_OPTIMISE_DEFAULTS}
             libraryMode={true}
             allowCropToggle={!isFieldUpload}
-            confirmLabel={isFieldUpload ? 'Use optimised image' : 'Add optimised image'}
+            conforming={!!currentItem?.conformsToLibrary}
+            confirmLabel={isFieldUpload ? 'Use optimised image'
+                : (currentItem?.conformsToLibrary ? '' : 'Add optimised image')}
             queueMode={!!queue}
             queuePosition={queuePosition}
             cancelLabel={queue ? 'Skip this file' : 'Cancel'}

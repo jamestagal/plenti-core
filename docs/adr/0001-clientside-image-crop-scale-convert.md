@@ -305,6 +305,13 @@ implemented on this branch:
   expose one explicit **Crop** action beside Change Media in a split hover overlay (the
   original prototype's visual, rebuilt); ordinary and `crop:false` fields show Change Media
   only.
+- **Ingestion conformance (owner-confirmed, 2026-07-12)** — the field-selection short-circuit's
+  principle extended to the gateway itself: an upload already meeting the library defaults
+  (target format + within the max edge) is added **as-is** — original bytes, original name (the
+  raw-passthrough naming contract, not the hashed derivative identity), `create` action — never
+  silently decoded/re-encoded, since a deliberately pre-optimised asset can come out larger.
+  Standalone shows an explicit as-is review step (crop remains an opt-in that re-enters the
+  derivative flow); field-launched conforming uploads skip the optimise modal and defer as-is.
 - **Terminology reconciled** (his question): *optimise* = the no-interaction ingestion bundle
   (downscale-to-max `scale` + `convert` + quality); *convert* is one ingredient; *crop* is the
   one interactive operation.

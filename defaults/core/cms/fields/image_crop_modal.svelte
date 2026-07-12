@@ -16,6 +16,10 @@
     // false so the field's own placement crop is the single interactive step).
     export let libraryMode = false;
     export let allowCropToggle = false;
+    // Ingestion conformance (#364): the source ALREADY meets the library
+    // defaults (target format, within the max edge). Confirming without crop
+    // adds the ORIGINAL BYTES — no decode/re-encode — so the copy reflects it.
+    export let conforming = false;
     export let confirmLabel = '';
     // Standalone multi-file queue affordances (field call sites leave these off →
     // pixel-identical to before). `queuePosition` = { index, total } (1-based) or null
@@ -174,7 +178,8 @@
         {#if queuePosition && queuePosition.total > 1}
             <p class="queue-pos">Image {queuePosition.index} of {queuePosition.total}</p>
         {/if}
-        <p class="hint">{doCrop ? 'Drag to pan • scroll or buttons to zoom' : 'Preview of the optimised output'}</p>
+        <p class="hint">{doCrop ? 'Drag to pan • scroll or buttons to zoom'
+            : (conforming ? 'Already optimised — will be added unchanged' : 'Preview of the optimised output')}</p>
 
         {#if allowCropToggle}
             <label class="crop-toggle">
@@ -196,9 +201,12 @@
 
         {#if showCoords && dims}
             <div class="readout">
-                {#if doScale}Output: {dims.w}×{dims.h}px{:else}Size: {dims.w}×{dims.h}px (source){/if}
-                {#if opts?.convert} → {opts.convert.toUpperCase()}{/if}
-                {#if locked} • aspect locked{/if}
+                {#if conforming && !doCrop}Original: {dims.w}×{dims.h}px • added as-is (no re-encode)
+                {:else}
+                    {#if doScale}Output: {dims.w}×{dims.h}px{:else}Size: {dims.w}×{dims.h}px (source){/if}
+                    {#if opts?.convert} → {opts.convert.toUpperCase()}{/if}
+                    {#if locked} • aspect locked{/if}
+                {/if}
             </div>
         {/if}
 
@@ -219,7 +227,8 @@
             {/if}
             <button type="button" class="secondary" on:click|preventDefault={cancel} disabled={processing}>{cancelLabel}</button>
             <button type="button" class="primary" on:click|preventDefault={confirm} disabled={processing}>
-                {processing ? 'Processing…' : (confirmLabel || (doCrop ? 'Apply crop' : 'Apply'))}
+                {processing ? 'Processing…'
+                    : (confirmLabel || (doCrop ? 'Apply crop' : (conforming ? 'Add image as-is' : 'Apply')))}
             </button>
         </div>
     </div>
