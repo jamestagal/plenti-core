@@ -69,8 +69,18 @@
     // #364 core: enforce the field's schema when a NEW image path enters the field
     // — a Library-tab pick (via this changingMedia reactive) or a fresh upload
     // (via onSavedPath after the gateway saves it). Both deliver a persisted PATH.
+    // changingMedia is SHARED across every media field, so a pick must be
+    // claimed by exactly the field that opened the picker. The claim is
+    // uploadContext IDENTITY: swapMedia() puts this instance's own context
+    // object into uploadContext when the picker opens — long before any pick,
+    // so no ordering race with the pick's modal close — and admin_menu resets
+    // it on an abandoned close (the X) or a standalone open. Without this, a
+    // field whose picker was closed without picking still passed the
+    // field===originalMedia guard and captured the NEXT pick made for a
+    // DIFFERENT field (its crop modal opened on top of the real one).
     let lastHandled;
-    $: if (changingMedia && field === originalMedia && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
+    $: if (changingMedia && uploadContext === myPickContext && field === originalMedia
+            && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
         lastHandled = changingMedia;
         handleNewSelection(changingMedia);
     }
@@ -183,13 +193,16 @@
 
     // --- media-swap entry point ---
     let originalMedia;
+    let myPickContext = null;   // this instance's claim on the open picker
     const swapMedia = () => {
         originalMedia = field;
         // Open the Media picker with this field's context. A fresh upload flows
-        // through the gateway (optimise -> eager save -> persisted path) and comes
-        // back via onSavedPath; a Library pick flows through the changingMedia
-        // reactive. Either way the field only ever receives a path (never a File).
-        uploadContext = { kind: 'field', onSavedPath };
+        // through the gateway and comes back via onSavedPath; a Library pick
+        // flows through the changingMedia reactive, gated on this exact context
+        // object still being the current uploadContext (see the claim note
+        // above). Either way the field only ever receives a path (never a File).
+        myPickContext = { kind: 'field', onSavedPath };
+        uploadContext = myPickContext;
         changingMedia = fieldSrc;
         showMediaModal = true;
     }
