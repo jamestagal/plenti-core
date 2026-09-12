@@ -69,7 +69,8 @@
 
     // #364 core: enforce the field's schema when a NEW image path enters the field
     // — a Library-tab pick (via this changingMedia reactive) or a fresh upload
-    // (via onSavedPath after the gateway saves it). Both deliver a persisted PATH.
+    // (via onSavedPath after the gateway stages it). Both deliver a canonical
+    // path; a fresh upload is still deferred until the page save.
     // changingMedia is SHARED across every media field, so a pick must be
     // claimed by exactly the field that opened the picker. The claim is
     // uploadContext IDENTITY: swapMedia() puts this instance's own context
@@ -189,13 +190,13 @@
         }
     }
 
-    // A field-launched UPLOAD was optimised + eagerly saved by the Media gateway,
-    // which handed back the persisted PATH (via admin_menu's finishFieldUpload).
+    // A field-launched upload was staged by the Media gateway, which handed
+    // back its canonical path (via admin_menu's finishFieldUpload).
     // Feed that path into the SAME selection logic a Library-tab pick uses, so the
     // field's schema processing (crop/optimise) still runs. This handler OWNS its
-    // errors — a field-processing failure is NOT an upload failure; the canonical
-    // asset is already safely in the library, so we keep the previous field value
-    // and surface a field error rather than claiming the upload failed.
+    // errors: the canonical asset remains staged, and the previous field value
+    // is retained on processing failure. Nothing is persisted until page save.
+    // onSavedPath is the existing handoff name; it does not imply persistence.
     async function onSavedPath(path) {
         try {
             await handleNewSelection(path);

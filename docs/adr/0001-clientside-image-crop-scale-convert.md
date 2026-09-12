@@ -297,8 +297,9 @@ implemented on this branch:
   the gateway still optimises clientside immediately, but the canonical asset is staged in
   `pendingMedia` and flushes WITH the page save — canonical + any placement derivative +
   content in ONE commit; an abandoned edit persists nothing. Deferred RAW passthrough keeps
-  per-item `action:'create'` (a same-name conflict still surfaces at save — never a silent
-  overwrite). **Standalone Media-Library uploads keep the explicit eager "Save Media" batch**
+  per-item `action:'create'` (Gitea/GitLab surface same-name conflicts at save; the existing
+  local dev endpoint still overwrites, tracked as a separate backend fix).
+  **Standalone Media-Library uploads keep the explicit eager "Save Media" batch**
   (no page-save moment exists there) — D12's eager-save scope narrows to exactly that surface.
 - **Field UX (confirmed)**: automatic `scale`/`convert` is silent — deterministic, applied on
   selection, conformance-skipped — so there is **no Optimise button**. Crop-configured fields
@@ -336,3 +337,13 @@ exactly ONE `/postlocal` request carrying `update:content + canonical + placemen
 reload-before-save persists nothing; the conformance short-circuit assigned a 5000×3000 JPEG
 directly into a `convert:'jpg', scale:false` field (no copy, no commit); standalone Save Media
 unchanged (eager batch); no Optimise control anywhere; engine suite 39 (12 conformance cases).
+
+**Review follow-up (2026-09-12, Groups 1 and 2).** D13's model is unchanged. Field
+requests now lose ownership on a newer selection, picker reopen, or destruction;
+upload probes also check the captured picker context. Guards cover both decode and
+automatic field encoding. The page patcher records its last written URL separately
+from the current canonical source, so a new selection replaces the old record and
+both store removal and teardown restore the current source. PDF tiles keep a
+separate canonical path for selection even when their `src` is a blob preview.
+See the acceptance matrix's review-follow-up section for synthetic and instrumented
+browser evidence. Library deletion resurrection remains a separate Group 3 follow-up.

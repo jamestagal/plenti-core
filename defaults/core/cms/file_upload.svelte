@@ -87,7 +87,8 @@
     // pre-optimised asset (e.g. an aggressively compressed 15 KB WebP) can come
     // out LARGER from the canvas. Such files are offered/added AS-IS — original
     // bytes, ORIGINAL name (the raw-passthrough naming contract, not the hashed
-    // derivative identity), action 'create' so a same-name conflict surfaces.
+    // derivative identity), action 'create'. Gitea/GitLab reject same-name
+    // creates; the existing local dev endpoint still overwrites them.
     function loadProbeImage(src) {
         return new Promise((resolve, reject) => {
             const img = new Image();
@@ -249,8 +250,8 @@
         if (!token) { processing = false; return; }
         try {
             // Conforming item confirmed WITHOUT a crop → add the ORIGINAL BYTES
-            // under the original name ('create': a same-name conflict surfaces
-            // at save, never a silent overwrite). Ticking Crop opts back into
+            // under the original name ('create': Gitea/GitLab reject conflicts;
+            // the local dev endpoint still overwrites). Ticking Crop opts back into
             // the derivative flow — cropping inherently re-encodes.
             const addAsIs = item.conformsToLibrary === true && !event.detail.selection;
             const transport = addAsIs
@@ -335,8 +336,8 @@
     function passthroughFieldFile(file) {
         const filePath = mediaPrefix + "media/" + file.name;
         // DEFERRED raw passthrough (a File IS a Blob): stages in pendingMedia and
-        // flushes with the page save. action 'create' preserves the
-        // no-silent-overwrite rule — a same-name conflict surfaces at save time.
+        // flushes with the page save. Gitea/GitLab reject same-name 'create';
+        // the pre-existing local dev endpoint overwrites (separate backend fix).
         pendingMedia.add(filePath, file, filePath, 'create');
         dispatch('saved', filePath);
     }

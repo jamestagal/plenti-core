@@ -37,7 +37,7 @@ go build ./...                                            # Go + CMS embed
 | 10 | Field-launched into `crop:true` shows EXACTLY ONE interactive crop (the field's) | browser | Slice 5 Path-2: gateway optimise-only (no crop toggle), then one field crop modal | ✅ |
 | 11 | Field-launched PDF/GIF/SVG eagerly saves (`create`) and auto-returns its path | browser | Slice 2 passthrough path; provider `create` semantics | ✅ |
 | 12 | Per-item action: passthrough `create`, derivative `upsert`, in the same commit list | provider + browser | GitLab/Gitea/local `create` vs `update`/`upsert`; Slice 4 mixed batch (derivatives upsert, PDF/SVG/GIF create) | ✅ |
-| 13 | Re-uploading a raw passthrough filename stays `create` (no silent overwrite) | provider | `absent derivative → create`; per-item `action ?? action` honoured | ✅ |
+| 13 | Re-uploading a raw passthrough filename stays `create` (Gitea/GitLab reject conflicts; local dev still overwrites) | provider | `absent derivative → create`; per-item `action ?? action` honoured | ✅ intent; local collision protection not implemented |
 | 14 | Collision, all three: diff-source/same-dims → diff; diff-crop/same-dims → diff; same → same | gateway | `same source+crop+opts → SAME`, `different source bytes → DIFFERENT`, `different crop rect → DIFFERENT`, `two sources same stem+dims → DIFFERENT paths` | ✅ |
 | 15 | Standalone wording truthful: "Add optimised image" ≠ persisted until "Save Media" | browser | Slice 1/4: Add queues; Save Media commits (separate clicks) | ✅ |
 | 16 | Partial-failure honesty: canonical save OK but field processing fails → asset stays, previous field value retained, UI reports field/assignment failure (not "upload failed") | browser | Slice 5 Path-2: `fail-path2-…webp` on disk, media modal already closed, field-crop error "source image … invalid dimensions" (transform failure, not upload) | ✅ |
@@ -93,7 +93,7 @@ Commits `b058d88` (upstream #375 merge), `796c7db`, `a7a9ca4`, `1c00748`. Behavi
 |---|---|
 | Case 5 (field auto-return) | Field-launched uploads now DEFER: the canonical stages in `pendingMedia` and flushes with the page save — content + canonical + placement derivative in ONE commit (browser-proven: one `/postlocal` with all three). The eager one-click commit is gone; case 4's field-side provider-failure path moves to the page-save Button (already covered). |
 | Case 10 | Unchanged (one interactive crop) — and the field crop modal now loads deferred assets from in-memory blobs (the §A "same-session `<img>` race" caveat is structurally gone for this flow). |
-| Case 11 (field passthrough) | Deferred with per-item `action:'create'` retained — a same-name conflict surfaces at page save, never a silent overwrite. |
+| Case 11 (field passthrough) | Deferred with per-item `action:'create'` retained — Gitea/GitLab surface same-name conflicts at page save. The existing local dev endpoint still overwrites; that backend fix is separate. |
 | NEW: conformance | `conformsToImageOptions` short-circuit: a conforming asset is referenced directly (no derivative, no commit). Engine suite 27 → **39**. |
 | NEW: abandoned edit | Reload before page save persists NOTHING (browser-proven). |
 | Field UX | No Optimise button anywhere; crop-configured fields show one explicit Crop beside Change Media (split hover). |
@@ -102,3 +102,47 @@ Commits `b058d88` (upstream #375 merge), `796c7db`, `a7a9ca4`, `1c00748`. Behavi
 | NEW: ingestion conformance / add-as-is (owner-confirmed) | An upload that ALREADY meets the library defaults (target format + within the max edge, via `conformsToImageOptions(…, LIBRARY_OPTIMISE_DEFAULTS)`) is never silently re-encoded — a deliberately pre-optimised asset can come out LARGER from the canvas. Standalone: the review modal switches to as-is mode ("Already optimised — will be added unchanged", button "Add image as-is"; ticking Crop opts back into the derivative flow) and confirm stages the ORIGINAL BYTES under the ORIGINAL name with `create` (the raw-passthrough contract). Field-launched: a conforming image skips the optimise modal and defers as-is; the field's own schema processing still applies. Engine suite +4 (C-ING1–4) → 43. Browser-proven with the owner's real 14,678-byte 500×300 WebP: modal detected conformance, Save Media wrote `media/500x300_Rubiaceae.webp` BYTE-IDENTICAL (`cmp` clean). |
 | NEW: cross-field pick capture (owner-review find) | `changingMedia` is shared across all media fields; a field whose picker was closed WITHOUT picking kept its `field===originalMedia` claim and captured the next pick made for a different field (its crop modal opened on top of the real one). Selection is now gated on `uploadContext` IDENTITY — the exact context object this field set when it opened the picker; admin_menu resets it on abandoned close/standalone open, and it is set at picker-open time so there is no ordering race with the pick's modal close. Browser-proven: abandoned hero_string session then image-field pick → exactly ONE crop modal (the image field's); hero_string's own pick still opens its 500×300 modal. |
 | NEW: in-session Library append (owner-review find) | A page save persisted derivatives to `media/` but the open session's Library only listed them after a reload picked up the regenerated media list. `admin_menu` now appends committed `pendingMedia` paths to the in-session `media[]` (mirroring the standalone `addUploadsToLibrary`), deduped, format-normalised via `mediaPrefix`. Browser-proven same-session, no reload: after page save the Library grid lists the new derivative, its tile blob-covered by the preview patcher while the site rebuild races the disk write. |
+
+## Slice 7 review follow-up — Groups 1 and 2 (2026-09-12)
+
+Commits: `eabf4c2` (async ownership), `08556de` (preview ownership and PDF identity).
+Run `node scripts/test-cms-transitions.mjs`, or
+`deno run --allow-read --allow-env=TEST scripts/test-cms-transitions.mjs`.
+The env permission is for the bundled Svelte parser's `TEST` flag.
+
+The shared harness runs actual component instance scripts and the preview module;
+it controls Image/Canvas completion and a minimal DOM/MutationObserver boundary.
+It does **not** reproduce Svelte's scheduler or render component templates.
+Thus its results are synthetic transition evidence, supplemented as shown below
+by a freshly rebuilt fixture. No new npm dependencies are required.
+
+| Behavior / dedicated regression case | Synthetic result | Fresh browser evidence |
+| --- | --- | --- |
+| B remains selected when A decodes after B | Pass | Instrumented pass: hold real A onload, choose B, release A; page stays on B |
+| Reopening picker invalidates unfinished selection | Pass | Exercised in the preceding browser sequence |
+| Destroyed field ignores unfinished selection | Pass | Not separately exercised |
+| Closing upload while decoding stages nothing or hands off nothing | Pass | Instrumented pass: close A, open B, release A; B unchanged; cancelled file absent after page Save |
+| Changing upload owner cannot hand A to B | Pass | Same instrumented sequence exercises actual component teardown plus owner replacement |
+| Replace image upload with PDF while image decodes | Pass | Not separately exercised |
+| B remains selected when older A finishes encoding | Pass | Not separately exercised |
+| Active conforming upload stages original File and canonical path | Pass | Ordinary browser pass: active WebP shows deferred blob preview |
+| Active nonconforming upload opens optimise modal | Pass | Not separately exercised in this follow-up |
+| Older decode failure cannot add an error to B | Pass | Not separately exercised |
+| Pending A to persisted B updates the page preview | Pass | Ordinary browser pass: field and page show Perry, stale source marker removed |
+| Pending A to pending B restores B when B leaves store | Pass | Not separately exercised |
+| Pending A to pending B restores B when patcher stops | Pass | Not separately exercised |
+| Same-path rerender and re-crop preserve current blob and restore canonical path | Pass | Not separately exercised |
+| Stop before observer callback preserves the layout's new B | Pass | Not separately exercised |
+| PDF blur selection returns canonical tile path instead of blob | Pass | DOM verified: canonical attribute remains `media/review-document.pdf` while src is blob; native PDF focus path still unverified |
+
+All **157 tests** pass (43 engine + 12 gateway + 64 queue + 22 providers + 16
+transitions); `go build ./...` and a fresh fixture build pass. The completed
+transition harness against untouched `212b1b7` reports **13 failures and 3 passes**,
+including both restore-path failures. Browser timing control was confined to a
+temporary copied fixture: real Image decoding, manually held/released onload.
+Screenshots, control script, and reproduction details are retained in the
+GiteaPlenti tracking repository under `docs/upstream/364-slice7-fixes-evidence/`.
+
+**Still open:** Group 3 (deleted assets re-added from committed pending entries),
+the separate local create-conflict backend fix, and the parked #360 native PDF
+interaction redesign. These are not covered by the pass claims above.

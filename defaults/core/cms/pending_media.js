@@ -34,8 +34,8 @@ function createPendingMedia() {
         // same target replaces the blob (revoking the previous preview URL) and
         // keeps the original sourcePath. `action` defaults to the provider-neutral
         // 'upsert' (derivatives may legitimately re-derive an existing path);
-        // deferred RAW passthrough files pass 'create' so a same-name upload is
-        // still surfaced as a conflict, never silently overwritten.
+        // deferred RAW passthrough files pass 'create' so Gitea/GitLab surface
+        // same-name conflicts. The existing local dev endpoint still overwrites.
         add(file, blob, sourcePath, action = 'upsert') {
             update(list => {
                 const existing = list.find(i => i.file === file);
