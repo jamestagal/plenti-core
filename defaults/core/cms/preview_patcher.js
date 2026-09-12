@@ -19,28 +19,40 @@ const ATTR = 'data-plenti-pending-src';
 const entryFor = (list, src) =>
     src ? list.find(i => src === i.file || src.endsWith('/' + i.file)) : null;
 
-function applyPending(list) {
+function restore(el, state) {
+    // A layout may have changed src before the observer ran (including during
+    // teardown). Only undo the URL WE wrote; never undo the layout's new value.
+    if (el.getAttribute('src') === state.url) el.setAttribute('src', state.original);
+    el.removeAttribute(ATTR);
+}
+
+function applyPending(list, patched) {
     document.querySelectorAll('img, embed').forEach(el => {
         const src = el.getAttribute('src') || '';
-        const original = el.getAttribute(ATTR);
-        if (original !== null) {
-            const entry = entryFor(list, original);
-            if (!entry) {
-                el.setAttribute('src', original);   // no longer pending
-                el.removeAttribute(ATTR);
-            } else if (src !== entry.url) {
-                // A rerender restored the raw path, or a re-crop replaced the
-                // blob — point back at the current preview URL.
-                el.setAttribute('src', entry.url);
-            }
-            return;
+        let state = patched.get(el);
+        if (state && src !== state.url && src !== state.original) {
+            // A different src belongs to a NEW selection, not a rerender of
+            // the previous one. Forget A before resolving B (pending or saved).
+            restore(el, state);
+            patched.delete(el);
+            state = null;
         }
-        const entry = entryFor(list, src);
+        const original = state ? state.original : src;
+        const entry = entryFor(list, original);
         if (entry) {
-            el.setAttribute(ATTR, src);
-            el.setAttribute('src', entry.url);
+            // Remember the last written URL separately: re-cropping the same
+            // path replaces its blob, while its canonical identity stays put.
+            patched.set(el, { original, url: entry.url });
+            el.setAttribute(ATTR, original);
+            if (src !== entry.url) el.setAttribute('src', entry.url);
+        } else if (state) {
+            restore(el, state);
+            patched.delete(el);
         }
     });
+    for (const [el, state] of patched) {
+        if (!el.isConnected) { restore(el, state); patched.delete(el); }
+    }
 }
 
 // Client-only: call from onMount. Returns a stop() that restores every
@@ -48,7 +60,8 @@ function applyPending(list) {
 // the entry URL, so the observer callback makes no further mutations.
 export function startPreviewPatcher() {
     let current = [];
-    const run = () => applyPending(current);
+    const patched = new Map();
+    const run = () => applyPending(current, patched);
     const unsubscribe = pendingMedia.subscribe(list => { current = list; run(); });
     const observer = new MutationObserver(run);
     observer.observe(document.body, {
@@ -60,6 +73,7 @@ export function startPreviewPatcher() {
     return () => {
         observer.disconnect();
         unsubscribe();
-        applyPending([]);
+        for (const [el, state] of patched) restore(el, state);
+        patched.clear();
     };
 }

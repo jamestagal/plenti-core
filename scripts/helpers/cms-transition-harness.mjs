@@ -31,9 +31,9 @@ export async function component(file, props, bridge) {
     const source = await readFile(new URL(file, cms), 'utf8');
     const nodes = parse(source).instance.content.body;
     const bindings = {}, declarations = [], reactive = [], implicit = new Set();
-    const exported = [], destroys = [], events = [];
+    const exported = [], mounts = [], destroys = [], events = [];
     const hooks = {
-        onMount: () => {},
+        onMount: fn => mounts.push(fn),
         onDestroy: fn => destroys.push(fn),
         createEventDispatcher: () => (type, detail) => events.push({ type, detail }),
     };
@@ -50,8 +50,12 @@ export async function component(file, props, bridge) {
                 }
             }
         } else if (node.type === 'ExportNamedDeclaration') {
-            declarations.push(source.slice(node.declaration.start, node.declaration.end));
-            for (const d of node.declaration.declarations) exported.push(d.id.name);
+            for (const d of node.declaration.declarations) {
+                const name = d.id.name;
+                const fallback = d.init ? source.slice(d.init.start, d.init.end) : 'undefined';
+                declarations.push(`let ${name} = Object.hasOwn(props, '${name}') ? props.${name} : (${fallback});`);
+                exported.push(name);
+            }
         } else if (node.type === 'LabeledStatement' && node.label.name === '$') {
             reactive.push(source.slice(node.body.start, node.body.end));
             const expression = node.body.expression;
@@ -60,6 +64,7 @@ export async function component(file, props, bridge) {
             }
         } else declarations.push(source.slice(node.start, node.end));
     }
+    bindings.pendingMedia = pendingMedia;
     const script = `
         ${declarations.join('\n')}
         let ${[...implicit, '$pendingMedia'].join(', ')};
@@ -75,7 +80,7 @@ export async function component(file, props, bridge) {
         } };
     `;
     const api = new Function(...Object.keys(bindings), 'props', script)(...Object.values(bindings), props);
-    return { ...api, events, destroy: () => destroys.forEach(fn => fn()) };
+    return { ...api, events, mount: () => mounts.forEach(fn => fn()), destroy: () => destroys.forEach(fn => fn()) };
 }
 
 export function controlledImages() {
@@ -97,3 +102,53 @@ export function controlledImages() {
 
 // Drain handler promise continuations without wall-clock sleeps.
 export const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+// Minimal DOM boundary for the real preview patcher: src mutations are delivered
+// asynchronously, like MutationObserver. No browser rendering is simulated.
+export async function previewPage() {
+    const originalDocument = globalThis.document;
+    const originalObserver = globalThis.MutationObserver;
+    const elements = [], observers = new Set();
+    const changed = () => {
+        for (const observer of observers) {
+            if (observer.queued) continue;
+            observer.queued = true;
+            queueMicrotask(() => {
+                observer.queued = false;
+                if (observers.has(observer)) observer.callback();
+            });
+        }
+    };
+    globalThis.MutationObserver = class {
+        constructor(callback) { this.callback = callback; }
+        observe() { observers.add(this); }
+        disconnect() { observers.delete(this); }
+    };
+    globalThis.document = { body: {}, querySelectorAll: () => elements.filter(el => el.isConnected) };
+    const patcher = await import(await moduleURL('preview_patcher.js', {
+        "'./pending_media.js'": JSON.stringify(pendingURL),
+    }));
+    let stop;
+    return {
+        element(src, tagName = 'IMG') {
+            const attributes = new Map([['src', src]]);
+            const el = {
+                tagName, isConnected: true,
+                getAttribute: name => attributes.get(name) ?? null,
+                setAttribute(name, value) {
+                    const previous = attributes.get(name); attributes.set(name, value);
+                    if (name === 'src' && previous !== value) changed();
+                },
+                removeAttribute(name) { attributes.delete(name); if (name === 'src') changed(); },
+            };
+            elements.push(el); changed(); return el;
+        },
+        start() { stop = patcher.startPreviewPatcher(); },
+        stop() { stop?.(); stop = null; },
+        restore() {
+            stop?.();
+            globalThis.document = originalDocument;
+            globalThis.MutationObserver = originalObserver;
+        },
+    };
+}

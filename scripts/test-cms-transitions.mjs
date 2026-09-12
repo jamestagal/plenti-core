@@ -2,7 +2,7 @@
 // Or: deno run --allow-read --allow-env=TEST scripts/test-cms-transitions.mjs
 // Synthetic component-transition evidence; see the harness's scope note.
 import assert from 'node:assert/strict';
-import { component, controlledImages, pendingMedia, settle } from './helpers/cms-transition-harness.mjs';
+import { component, controlledImages, pendingMedia, settle, previewPage } from './helpers/cms-transition-harness.mjs';
 
 let passed = 0, failed = 0;
 async function test(name, run) {
@@ -138,6 +138,84 @@ await test('an older decode failure cannot put an error on the newer selection',
     images.reject(images.loads[0]); await settle();
     assert.deepEqual([field.read().field, field.read().cropError], ['media/b.webp', '']);
     field.destroy();
+});
+
+await test('page preview follows a new persisted selection instead of retaining A', async () => {
+    const page = await previewPage();
+    try {
+        pendingMedia.add('media/a.webp', new Blob(['A']), 'media/a.webp');
+        const hero = page.element('media/a.webp'); page.start();
+        assert.equal(hero.getAttribute('src'), pendingMedia.previewUrl('media/a.webp'));
+        hero.setAttribute('src', 'media/b.webp'); await settle();
+        assert.equal(hero.getAttribute('src'), 'media/b.webp');
+        assert.equal(hero.getAttribute('data-plenti-pending-src'), null);
+    } finally { page.restore(); }
+});
+
+for (const cleanup of ['entry removal', 'patcher stop']) {
+    await test('A to pending B restores B on ' + cleanup, async () => {
+        const page = await previewPage();
+        try {
+            pendingMedia.add('media/a.webp', new Blob(['A']), 'media/a.webp');
+            pendingMedia.add('media/b.webp', new Blob(['B']), 'media/b.webp');
+            const hero = page.element('media/a.webp'); page.start();
+            hero.setAttribute('src', 'media/b.webp'); await settle();
+            assert.equal(hero.getAttribute('src'), pendingMedia.previewUrl('media/b.webp'));
+            if (cleanup === 'entry removal') pendingMedia.remove('media/b.webp');
+            else page.stop();
+            await settle();
+            assert.equal(hero.getAttribute('src'), 'media/b.webp');
+            assert.equal(hero.getAttribute('data-plenti-pending-src'), null);
+        } finally { page.restore(); }
+    });
+}
+
+await test('same-path rerender and re-crop keep the current blob and restore the path', async () => {
+    const page = await previewPage();
+    try {
+        pendingMedia.add('media/a.webp', new Blob(['A']), 'media/a.webp');
+        const hero = page.element('/base/media/a.webp'); page.start();
+        hero.setAttribute('src', '/base/media/a.webp'); await settle();
+        assert.equal(hero.getAttribute('src'), pendingMedia.previewUrl('media/a.webp'));
+        pendingMedia.add('media/a.webp', new Blob(['new A']), 'media/a.webp'); await settle();
+        assert.equal(hero.getAttribute('src'), pendingMedia.previewUrl('media/a.webp'));
+        page.stop();
+        assert.equal(hero.getAttribute('src'), '/base/media/a.webp');
+    } finally { page.restore(); }
+});
+
+await test('stopping before a queued observer runs does not restore stale A', async () => {
+    const page = await previewPage();
+    try {
+        pendingMedia.add('media/a.webp', new Blob(['A']), 'media/a.webp');
+        const hero = page.element('media/a.webp'); page.start();
+        hero.setAttribute('src', 'media/b.webp'); page.stop(); await settle();
+        assert.equal(hero.getAttribute('src'), 'media/b.webp');
+    } finally { page.restore(); }
+});
+
+await test('PDF blur selection returns its canonical tile path, not its preview URL', async () => {
+    const originalWindow = globalThis.window, originalFocus = globalThis.focus;
+    let blur;
+    const attributes = new Map([
+        ['src', 'blob:pdf-preview'], ['data-plenti-media-path', 'media/document.pdf'],
+    ]);
+    const embed = {
+        getAttribute: name => attributes.get(name) ?? null,
+        attributes: { src: { nodeValue: 'blob:pdf-preview' } },
+    };
+    globalThis.document = { querySelectorAll: () => [embed], activeElement: embed };
+    globalThis.focus = () => {};
+    globalThis.window = { parent: { focus() {} }, addEventListener: (_type, callback) => { blur = callback; } };
+    try {
+        const grid = await component('media_grid.svelte', {
+            files: ['media/document.pdf'], changingMedia: 'media/original.webp', showMediaModal: true,
+        }, 'read() { return { changingMedia, selectedMedia, showMediaModal }; }');
+        grid.mount(); blur();
+        assert.deepEqual(grid.read(), {
+            changingMedia: 'media/document.pdf', selectedMedia: ['media/document.pdf'], showMediaModal: false,
+        });
+    } finally { globalThis.window = originalWindow; globalThis.focus = originalFocus; }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

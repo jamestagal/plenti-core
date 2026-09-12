@@ -7,10 +7,11 @@
     onMount(async () => {
         focus();
         window.addEventListener('blur', () => {
-            let embeds = document.querySelectorAll('embed');
+            let embeds = document.querySelectorAll('embed[data-plenti-media-path]');
             embeds.forEach(embed => {
                 if (document.activeElement === embed) {
-                    selectMedia(embed.attributes.src.nodeValue);
+                    // src may be a deferred blob preview; selection owns a path.
+                    selectMedia(embed.getAttribute('data-plenti-media-path'));
                 }
             });
             window.parent.focus();
@@ -43,7 +44,7 @@
     {#each files as file, i}
         <div class="media{selectedMedia.includes(file) ? ' selected' : ''}" on:click={selectMedia(file)}>
             {#if isDoc(file)}
-                <embed src="{file}" type="application/pdf" />
+                <embed src="{file}" data-plenti-media-path={file} type="application/pdf" />
             {:else if isImage(file)}
                 <img src={file} />
             {/if}
