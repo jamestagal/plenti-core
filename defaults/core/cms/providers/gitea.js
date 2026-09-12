@@ -57,14 +57,15 @@ export async function commitGitea(commitList, shadowContent, action, encoding, u
 
     // Gitea's contents API is per-file (no atomic multi-file commit here — that is
     // a separate provider-wide upgrade, see ADR 0001), so a mixed save is N
-    // sequential commits. Commit MEDIA (the 'upsert' derivatives) BEFORE content:
-    // if a media commit fails the loop aborts (throw) before the content — which
-    // references that derivative — is ever written. The remaining failure mode is a
-    // harmless orphan derivative (media ok, content later fails), never a content
-    // file pointing at a missing image.
+    // sequential commits. Order by repository path, not action: deferred raw/as-is
+    // uploads use 'create', while derivatives use 'upsert'. All media writes must
+    // succeed before referencing content is written. A later failure can still
+    // leave media behind; this ordering does not make the batch atomic.
+    const isMediaWrite = item => (item.action ?? action) !== 'delete'
+        && item.file.replace(/^\/+/, '').startsWith('media/');
     const orderedList = [
-        ...commitList.filter(i => (i.action ?? action) === 'upsert'),
-        ...commitList.filter(i => (i.action ?? action) !== 'upsert'),
+        ...commitList.filter(isMediaWrite),
+        ...commitList.filter(i => !isMediaWrite(i)),
     ];
 
     for (const commitItem of orderedList) {

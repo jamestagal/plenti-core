@@ -174,6 +174,63 @@ console.log('=== Gitea (sequential per-file; upsert via GET; media before conten
     truthy('content write NEVER attempted after media failure',
         !calls.some(c => (c.method === 'PUT' || c.method === 'POST') && c.url.includes('page.json')));
 
+    // A deferred as-is upload uses CREATE, not upsert. It must fail before
+    // content is written too. Route-aware responses let either ordering run,
+    // so a failure here is the dangerous content write, not a mock mismatch.
+    calls = scriptFetch(Array(8).fill((url, opts) => {
+        if (url.endsWith('/user')) return res(200, { json: { login: 'u' } });
+        if (opts.method === 'GET') return res(200, { json: { sha: 'content-sha' } });
+        if (url.endsWith('/media/new.webp')) return res(500, { json: { message: 'raw write failed' } });
+        return res(200, { json: {} });
+    }));
+    let rawError;
+    try {
+        await commitGitea([
+            { file: 'content/pages/test.json', contents: '{"image":"media/new.webp"}' },
+            { file: 'media/new.webp', action: 'create', encoding: 'base64', contents: 'data:image/webp;base64,AAAA' },
+        ], null, 'update', 'text', fakeUser);
+    } catch (error) { rawError = error.message; }
+    eq('raw create failure surfaces its provider error', rawError, 'Publish failed: raw write failed');
+    eq('content write NEVER attempted after raw create failure',
+        calls.filter(c => ['PUT', 'POST'].includes(c.method) && c.url.includes('/content/pages/test.json')).length, 0);
+
+    // Stable mixed-media ordering, preserving create/update semantics.
+    calls = scriptFetch(Array(12).fill((url, opts) => {
+        if (url.endsWith('/user')) return res(200, { json: { login: 'u' } });
+        if (opts.method === 'GET') return res(200, { json: { sha: 'existing-sha' } });
+        return res(200, { json: {} });
+    }));
+    await commitGitea([
+        { file: 'content/pages/test.json', contents: '{}' },
+        { file: 'media/raw.pdf', action: 'create', encoding: 'base64', contents: 'data:application/pdf;base64,AAAA' },
+        { file: 'media/derivative.webp', action: 'upsert', encoding: 'base64', contents: 'data:image/webp;base64,AAAA' },
+        { file: '/media/nested/as-is.webp', action: 'create', encoding: 'base64', contents: 'data:image/webp;base64,AAAA' },
+    ], null, 'update', 'text', fakeUser);
+    const mixedWrites = calls.filter(c => ['POST', 'PUT'].includes(c.method));
+    eq('all mixed media writes precede content in original media order',
+        mixedWrites.map(c => c.url.split('/contents/')[1]),
+        ['media/raw.pdf', 'media/derivative.webp', '/media/nested/as-is.webp', 'content/pages/test.json']);
+    eq('ordering preserves raw create and resolved derivative update methods',
+        mixedWrites.map(c => c.method), ['POST', 'PUT', 'POST', 'PUT']);
+
+    // Creating a new page must also wait for a passthrough PDF to persist.
+    calls = scriptFetch(Array(8).fill((url, opts) => {
+        if (url.endsWith('/user')) return res(200, { json: { login: 'u' } });
+        if (url.endsWith('/media/raw.pdf')) return res(500, { json: { message: 'PDF write failed' } });
+        if (opts.method === 'GET') return res(404);
+        return res(201, { json: {} });
+    }));
+    const rawFailure = spyShadow();
+    try {
+        await commitGitea([
+            { file: 'content/pages/new.json', contents: '{"document":"media/raw.pdf"}' },
+            { file: 'media/raw.pdf', action: 'create', encoding: 'base64', contents: 'data:application/pdf;base64,AAAA' },
+        ], rawFailure.sc, 'create', 'text', fakeUser);
+    } catch { /* expected */ }
+    eq('new content create NEVER attempted after passthrough failure',
+        calls.filter(c => c.method === 'POST' && c.url.includes('/content/pages/new.json')).length, 0);
+    eq('passthrough failure never signals save success', rawFailure.counts.saves, 0);
+
     // resolve error (non-404) on upsert → abort
     calls = scriptFetch([
         () => res(200, { json: { login: 'u' } }),          // GET /user
