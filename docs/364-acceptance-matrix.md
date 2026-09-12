@@ -91,7 +91,7 @@ Commits `b058d88` (upstream #375 merge), `796c7db`, `a7a9ca4`, `1c00748`. Behavi
 
 | Area | Change |
 |---|---|
-| Case 5 (field auto-return) | Field-launched uploads now DEFER: the canonical stages in `pendingMedia` and flushes with the page save — content + canonical + placement derivative in ONE commit (browser-proven: one `/postlocal` with all three). The eager one-click commit is gone; case 4's field-side provider-failure path moves to the page-save Button (already covered). |
+| Case 5 (field auto-return) | Field-launched uploads now DEFER: the canonical stages in `pendingMedia` and flushes with the page save — content + canonical + placement derivative in one page-save operation (browser-proven: one `/postlocal` with all three; GitLab is atomic, Gitea remains sequential). The eager one-click commit is gone; case 4's field-side provider-failure path moves to the page-save Button (already covered). |
 | Case 10 | Unchanged (one interactive crop) — and the field crop modal now loads deferred assets from in-memory blobs (the §A "same-session `<img>` race" caveat is structurally gone for this flow). |
 | Case 11 (field passthrough) | Deferred with per-item `action:'create'` retained — Gitea/GitLab surface same-name conflicts at page save. The existing local dev endpoint still overwrites; that backend fix is separate. |
 | NEW: conformance | `conformsToImageOptions` short-circuit: a conforming asset is referenced directly (no derivative, no commit). Engine suite 27 → **39**. |
@@ -184,3 +184,31 @@ output, and screenshots are recorded in GiteaPlenti under
 The separate local create-conflict defect remains **unfixed and disclosed**.
 Native PDF-focus selection remains unverified; the parked #360 redesign remains
 separate. Neither is claimed fixed by Group 3.
+
+## Post-Draft Spec corrections (2026-09-13)
+
+Commits `7764d4c` (editor lifecycle and Code Save) and `838202d` (Gitea media
+ordering) address two additional save-path gaps found in the published PR reread.
+
+| Regression / check | Evidence |
+| --- | --- |
+| Remounting Visual on the same content file keeps deferred bytes | Synthetic component regression; ordinary browser Code→Visual roundtrip retained the same blob URL |
+| Visual↔Code and View↔Edit preserve the page session | Synthetic regression; ordinary browser traversed both roundtrips, then Visual Save persisted matching content and byte-identical media |
+| Code Save includes deferred assets and marks success | Real Button template-prop regression; ordinary browser Code Save persisted canonical JSON and byte-identical uploaded WebP |
+| Visual Save keeps the same media-aware hooks | Real Button template-prop regression; ordinary browser verified after the roundtrips |
+| Actual content-file change clears pending media with no child editor mounted | Synthetic regression |
+| CMS destruction/logout clears pending media | Synthetic regression |
+| Raw/as-is WebP create failure aborts before existing content is updated | Actual Gitea provider with mocked HTTP: expected error surfaced, zero content writes |
+| Mixed PDF create, derivative upsert, and slash-prefixed as-is create all precede content | Actual provider contract: media order preserved, create/update methods preserved |
+| PDF create failure prevents a new content create and success callback | Actual provider contract: zero content writes and zero `onSave` callbacks |
+
+The transition harness reads actual Button attribute expressions from the Svelte
+templates to catch missing hooks; it still does not simulate Svelte rendering or
+scheduling. There are **175 passing automated checks**: 43 engine, 12 gateway,
+64 queue, 28 provider assertions, and 28 component transitions. `go build ./...`
+and a fresh fixture build pass. Against pre-fix `6f474b7`, the current transition
+suite reports 22 passes / 6 failures and the provider suite 24 passes / 4 failures.
+
+Browser checks used a disposable fixture without timing controls or provider
+stubs. Gitea's new ordering is contract-tested only; no fresh live Gitea/GitLab run
+is claimed. Historical live results remain explicitly scoped in `364-remote-smoke.md`.

@@ -299,7 +299,8 @@ decision, not evidence of an additional public approval.
 - **Field-launched uploads are DEFERRED** (his "consolidate media swapping to one commit"):
   the gateway still optimises clientside immediately, but the canonical asset is staged in
   `pendingMedia` and flushes WITH the page save — canonical + any placement derivative +
-  content in ONE commit; an abandoned edit persists nothing. Deferred RAW passthrough keeps
+  content in one provider save operation (atomic on GitLab, sequential on Gitea);
+  abandoning the edit before Save persists nothing. Deferred RAW passthrough keeps
   per-item `action:'create'` (Gitea/GitLab surface same-name conflicts at save; the existing
   local dev endpoint still overwrites, tracked as a separate backend fix).
   **Standalone Media-Library uploads keep the explicit eager "Save Media" batch**

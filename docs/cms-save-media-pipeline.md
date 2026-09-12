@@ -1,5 +1,18 @@
 # Plenti CMS save / media pipeline (reference)
 
+> **Historical baseline:** the sections below were captured before the image-crop
+> integration and contain superseded APIs and save sequencing. They must not be
+> used as the current implementation contract. See [ADR D13](adr/0001-clientside-image-crop-scale-convert.md)
+> and the [acceptance matrix](364-acceptance-matrix.md) for current behavior.
+>
+> **Current save/session contract (2026-09-13):** the CMS root owns pending-media
+> cleanup on actual content-file changes and logout. Visual/Code and View/Edit
+> switches preserve that state. Both Save buttons call `pendingMedia.toCommitItems`
+> through `beforeSubmit`; the shared Button merges those extra items with content
+> in one provider call. Only success invokes `markCommitted`. GitLab is atomic;
+> Gitea writes media paths (including raw `create` and derivative `upsert`) before
+> content, sequentially. Neither hook performs a separate commit.
+
 Background map of how the Svelte CMS assembles a save and flows media values,
 captured while building the client-side image-crop feature (issue #364).
 Anchors are `file:line` under `defaults/core/cms/`. Companion to

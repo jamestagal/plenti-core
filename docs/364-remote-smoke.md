@@ -96,6 +96,13 @@ not validate the new endpoint overrides against a live host. Current synthetic,
 instrumented-browser, and ordinary-browser evidence is separated in the acceptance
 matrix.
 
+**Post-Draft correction (2026-09-13):** `838202d` subsequently changes Gitea's
+ordering to include raw/as-is media `create` writes before content, rather than
+prioritizing only derivative `upsert` items. Six new assertions across failure
+and mixed-write scenarios exercise the actual provider with mocked HTTP responses.
+They are current contract evidence, **not a new live-Gitea run**. The historical
+table above remains tied to `f3db27d`; it does not establish the new ordering.
+
 ### B1. What partial persistence means for retry
 
 Gitea makes sequential per-file commits. If an early raw `create` succeeds and a
