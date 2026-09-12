@@ -68,13 +68,54 @@ one-shot `/postlocal` 500 fetch patch.
 | File-input reset | `input.value === ''` immediately after selection (same-file re-selection fires) |
 | Invariants | content JSON `data:image` = 0; 0 blob-backed images after close; no app console errors; no bijection-violation logs |
 
-## B. Live remote smoke (GitLab / Gitea) — to run against a real host
+## B. Recorded live-provider smoke — 2026-07-02, `f3db27d`
+
+These results were recorded against **disposable local server instances**, using
+the actual `gitea.js` / `gitlab.js` provider modules from `feat/image-crop` at
+**`f3db27d`**. Build-only imports were stubbed; HTTP requests were real. This was
+agent-run provider smoke, distinct from owner-run UI testing. The original result
+ledger and harnesses are retained in the GiteaPlenti tracking repository under
+`docs/upstream/live-smoke/`; the dated results are summarized here so the PR's
+citation is self-contained.
+
+| Provider / environment | Recorded result |
+| --- | --- |
+| Gitea 1.26.4, native local server | 11/11 assertions passed: derivative upsert created on first upload and updated with SHA on re-upload; duplicate raw create threw; an early successful upsert remained after a later batch failure, with no `onSave` success signal |
+| GitLab CE 19.1.1, local Docker amd64 under Rosetta | 10/10 assertions passed: derivative create then update via HEAD metadata; duplicate raw create rejected; a failing mixed batch persisted neither action and emitted no `onSave` success signal |
+
+The Gitea run also observed that a contents `PUT` without a SHA created a missing
+file on that server version. This is a dated server observation, not a guarantee
+for every Gitea version or a substitute for explicit upsert resolution.
+
+**Scope and limitations:** this evidence predates Slice 7 and its review fixes.
+It does not establish a current-HEAD live rerun, current field/upload UI behavior,
+or successful retry after partial persistence. Between `f3db27d` and the reviewed
+`3401763`, the Gitea/GitLab module changes are upstream #375's optional `apiBaseUrl`
+overrides; Groups 1–3 did not change their save logic. That source comparison does
+not validate the new endpoint overrides against a live host. Current synthetic,
+instrumented-browser, and ordinary-browser evidence is separated in the acceptance
+matrix.
+
+### B1. What partial persistence means for retry
+
+Gitea makes sequential per-file commits. If an early raw `create` succeeds and a
+later item fails, the existing path can reject the same `create` on retry. The
+recorded tests establish duplicate-create rejection and partial persistence;
+they do not claim an atomic rollback or automatic reconciliation. A failed batch
+remaining available for review/retry is not a guarantee that retry succeeds
+without addressing already-written files. GitLab's batch commit is atomic.
+
+### B2. Checklist for a future live rerun
+
+The unchecked items below are a **future rerun checklist**, not a statement that
+the dated results above are missing. No current-HEAD live rerun is claimed.
 
 The provider **request contract** is unit-tested with mocked `fetch`
 (`scripts/test-providers.mjs`): per-item create/upsert resolution, GitLab atomic
-batch + HEAD-resolve, Gitea sequential media-before-content, and the failure
-behaviour (abort → no write; `onSave` never fires on partial failure). The
-following require a live host and are a manual pre-merge checklist:
+batch + HEAD-resolve, Gitea derivative-upsert-before-content ordering, and the failure
+behaviour (metadata-probe failure aborts before writes; `onSave` never fires on
+partial failure). Record the source SHA, date, server versions, and result when
+these checks are next run against live hosts:
 
 - [ ] **GitLab** — upload a derivative, then re-upload the *same* hashed name →
       the second commit resolves to `action: update` (HEAD found → `last_commit_id`
@@ -90,5 +131,6 @@ following require a live host and are a manual pre-merge checklist:
       NOT atomic retry (see ADR 0001). Confirm the UI surfaces the partial state
       rather than claiming a clean rollback.
 
-> These four are the only checks that need network credentials; everything else in
-> the acceptance matrix is proven offline (unit suites + local fixture browser).
+These provider checks need server credentials. The acceptance matrix labels the
+other verification layers separately; an automated or local-fixture pass is not
+a live-provider pass.
