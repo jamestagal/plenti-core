@@ -8,14 +8,6 @@
 
     $: schema = schemas[content.type];
 
-    // Discard any unsaved crop derivatives when the edited page changes (or the
-    // editor first loads) — deferred crops belong to a single editing session.
-    let lastFilepath;
-    $: if (content.filepath !== lastFilepath) {
-        lastFilepath = content.filepath;
-        pendingMedia.clear();
-    }
-
     let missingRequired = [];
 </script>
 

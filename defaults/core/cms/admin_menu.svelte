@@ -1,6 +1,7 @@
 <script>
     export let user, content, shadowContent;
     import { onMount } from 'svelte';
+    import { onDestroy } from 'svelte';
     import ModalWrapper from "./modals/modal_wrapper.svelte";
     import MediaModal from "./modals/media_modal.svelte";
     import ContentModal from "./modals/content_modal.svelte";
@@ -16,6 +17,15 @@
     // live preview stays truthful. Mounted here: the CMS root outlives every
     // remountable view; onMount's return disconnects on logout/destroy.
     onMount(() => startPreviewPatcher());
+    onDestroy(() => pendingMedia.clear());
+
+    // The CMS root owns the page session. Visual/Code and View/Edit remount
+    // child editors, but must not discard the bytes behind unsaved paths.
+    let lastFilepath;
+    $: if (content?.filepath !== lastFilepath) {
+        lastFilepath = content?.filepath;
+        pendingMedia.clear();
+    }
 
     let mediaPrefix = env.baseurl ? '' : '/';
     let media = allMedia.map(media => mediaPrefix + media);

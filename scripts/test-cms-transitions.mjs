@@ -2,16 +2,18 @@
 // Or: deno run --allow-read --allow-env=TEST scripts/test-cms-transitions.mjs
 // Synthetic component-transition evidence; see the harness's scope note.
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { component, controlledImages, pendingMedia, settle, previewPage } from './helpers/cms-transition-harness.mjs';
 
 let passed = 0, failed = 0;
 async function test(name, run) {
     const images = controlledImages();
     const originalDocument = globalThis.document;
+    const originalReader = globalThis.FileReader;
     pendingMedia.clear();
     try { await run(images); passed++; console.log('PASS ' + name); }
     catch (error) { failed++; console.error('FAIL ' + name + '\n' + error.stack); }
-    finally { images.restore(); globalThis.document = originalDocument; pendingMedia.clear(); }
+    finally { images.restore(); globalThis.document = originalDocument; globalThis.FileReader = originalReader; pendingMedia.clear(); }
 }
 
 const mediaField = (props = {}) => component('fields/media.svelte', {
@@ -314,6 +316,85 @@ await test('deleting the persisted path preserves an unsaved replacement for the
     assert.equal(pendingMedia.previewUrl(file), preview);
     pendingMedia.markCommitted();
     assert.deepEqual(library.read(), ['media/existing.webp', file]);
+});
+
+const pageContent = (filepath = 'content/pages/home.json') => ({
+    filepath, type: 'pages', fields: { image: 'media/new.webp' },
+});
+const adminForPage = content => component('admin_menu.svelte', { content }, '', {
+    '../../generated/media.js': { default: [] },
+    '../../generated/env.js': { env: { baseurl: '/' } },
+});
+const visualForPage = content => component('visual_editor.svelte', {
+    content, shadowContent: {}, localMediaList: [],
+}, '', { '../../generated/schemas.js': { default: {} } });
+
+await test('remounting Visual on the same page preserves deferred media', async () => {
+    const content = pageContent();
+    const admin = await adminForPage(content);
+    const firstVisual = await visualForPage(content);
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    const preview = pendingMedia.previewUrl('media/new.webp');
+    firstVisual.destroy();
+    const secondVisual = await visualForPage(content);
+    assert.equal(pendingMedia.previewUrl('media/new.webp'), preview);
+    secondVisual.destroy(); admin.destroy();
+});
+
+await test('leaving the CMS session releases its deferred previews', async () => {
+    const admin = await adminForPage(pageContent());
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    admin.destroy();
+    assert.deepEqual(stagedPaths(), []);
+});
+
+for (const editorType of ['Code', 'Visual']) await test(editorType + ' Save supplies deferred media and marks it committed only after success', async () => {
+    globalThis.FileReader = class {
+        async readAsDataURL(blob) {
+            this.result = 'data:' + blob.type + ';base64,' + Buffer.from(await blob.arrayBuffer()).toString('base64');
+            this.onload();
+        }
+    };
+    const content = pageContent();
+    const admin = await adminForPage(content);
+    pendingMedia.add('media/new.webp', new Blob(['pixels'], { type: 'image/webp' }), 'media/new.webp', 'create');
+    const editor = editorType === 'Code'
+        ? await component('json_editor.svelte', { content }, '')
+        : await visualForPage(content);
+    const save = editor.buttonProps('Save');
+    const extras = await save.beforeSubmit?.() ?? [];
+    assert.deepEqual(extras, [{ file: 'media/new.webp', action: 'create', encoding: 'base64', contents: 'data:image/webp;base64,cGl4ZWxz' }]);
+    assert.equal(JSON.parse(save.commitList[0].contents).image, 'media/new.webp');
+    assert.equal((await pendingMedia.toCommitItems()).length, 1);
+    save.afterSubmit();
+    assert.deepEqual(await pendingMedia.toCommitItems(), []);
+    assert.ok(pendingMedia.previewUrl('media/new.webp'));
+    editor.destroy(); admin.destroy();
+});
+
+await test('changing the page clears deferred media even with no editor mounted', async () => {
+    const admin = await adminForPage(pageContent());
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    admin.set({ content: pageContent('content/pages/other.json') });
+    assert.deepEqual(stagedPaths(), []);
+    admin.destroy();
+});
+
+await test('Code/Visual and View/Edit transitions keep the same page session', async () => {
+    const content = pageContent();
+    const admin = await adminForPage(content);
+    const firstVisual = await visualForPage(content);
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    const preview = pendingMedia.previewUrl('media/new.webp');
+    firstVisual.destroy();
+    const code = await component('json_editor.svelte', { content }, '');
+    code.destroy();
+    const secondVisual = await visualForPage(content);
+    secondVisual.destroy();
+    // View/Edit also recreates the child editor, but keeps the admin root.
+    const thirdVisual = await visualForPage(content);
+    assert.equal(pendingMedia.previewUrl('media/new.webp'), preview);
+    thirdVisual.destroy(); admin.destroy();
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

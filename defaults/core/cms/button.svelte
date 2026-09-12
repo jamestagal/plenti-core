@@ -19,8 +19,9 @@
         status = "sending";
         try {
             // beforeSubmit returns EXTRA commit items (e.g. cropped derivatives) to
-            // merge into ONE atomic provider commit; it must not commit itself, and
-            // may throw to abort the save cleanly (leaving editor + pending intact).
+            // merge into one provider save operation; it must not commit itself.
+            // GitLab is atomic; Gitea writes sequentially. The hook may throw
+            // before any writes, leaving editor + pending media intact.
             const extraChanges = (await beforeSubmit?.()) ?? [];
             await commit([...commitList, ...extraChanges], shadowContent, action, encoding, user);
             status = "sent";

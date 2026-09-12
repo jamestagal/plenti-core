@@ -32,7 +32,27 @@ const modules = {
 
 export async function component(file, props, bridge, fixtures = {}) {
     const source = await readFile(new URL(file, cms), 'utf8');
-    const nodes = parse(source).instance.content.body;
+    const parsed = parse(source);
+    const nodes = parsed.instance.content.body;
+    // Evaluate actual Button prop expressions at the save-hook boundary. This
+    // catches missing template wiring without pretending to render the DOM.
+    const buttons = [];
+    const visit = node => {
+        if (node.type === 'InlineComponent' && node.name === 'Button') {
+            const props = node.attributes.filter(a => a.type === 'Attribute').map(a => {
+                if (a.value === true) return JSON.stringify(a.name) + ': true';
+                if (a.value.length !== 1) throw new Error('Mixed Button attribute: ' + a.name);
+                const part = a.value[0];
+                const value = part.type === 'Text' ? JSON.stringify(part.data)
+                    : source.slice(part.expression.start, part.expression.end);
+                return JSON.stringify(a.name) + ': (' + value + ')';
+            });
+            buttons.push('() => ({' + props.join(',') + '})');
+        }
+        node.children?.forEach(visit);
+        if (node.else) visit(node.else);
+    };
+    visit(parsed.html);
     const bindings = {}, declarations = [], reactive = [], implicit = new Set();
     const exported = [], mounts = [], destroys = [], events = [];
     const hooks = {
@@ -79,7 +99,9 @@ export async function component(file, props, bridge, fixtures = {}) {
         };
         for (const [key, value] of Object.entries(props)) propSetters[key](value);
         flush();
-        return { ${bridge}, set(props) {
+        return { ${bridge ? bridge + ',' : ''}
+        buttonProps(label) { flush(); return [${buttons.join(',')}].map(read => read()).find(p => p.buttonText === label); },
+        set(props) {
             for (const [key, value] of Object.entries(props)) propSetters[key](value);
             flush();
         } };
