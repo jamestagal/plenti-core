@@ -102,6 +102,7 @@ prioritizing only derivative `upsert` items. Six new assertions across failure
 and mixed-write scenarios exercise the actual provider with mocked HTTP responses.
 They are current contract evidence, **not a new live-Gitea run**. The historical
 table above remains tied to `f3db27d`; it does not establish the new ordering.
+The later focused live run in §C now verifies that ordering at `60e1885`.
 
 ### B1. What partial persistence means for retry
 
@@ -114,8 +115,9 @@ without addressing already-written files. GitLab's batch commit is atomic.
 
 ### B2. Checklist for a future live rerun
 
-The unchecked items below are a **future rerun checklist**, not a statement that
-the dated results above are missing. No current-HEAD live rerun is claimed.
+The unchecked items below are a **future two-provider rerun checklist**, not a
+statement that the dated results above are missing. The newer focused Gitea
+result is in §C; GitLab has not been rerun since the dated evidence above.
 
 The provider **request contract** is unit-tested with mocked `fetch`
 (`scripts/test-providers.mjs`): per-item create/upsert resolution, GitLab atomic
@@ -141,3 +143,40 @@ these checks are next run against live hosts:
 These provider checks need server credentials. The acceptance matrix labels the
 other verification layers separately; an automated or local-fixture pass is not
 a live-provider pass.
+
+## C. Focused live Gitea run — 2026-09-13, `60e1885`
+
+**26 assertions passed, 0 failed**, using the actual Gitea provider at
+`60e18859837ff857b0147b7b928cd6d8f3ac9e4d` against a fresh **Gitea 1.26.4**
+native localhost server with isolated SQLite data and a new private repository.
+The provider ran as a verified **non-admin** user with `read:user,write:repository`.
+A separate same-user setup token with `write:user` created the repository and was
+never passed to the provider under test.
+
+Build/generated imports and the user-store/history adapters were supplied by the
+harness. Every HTTP request reached the real server; the observer recorded only
+method/path/status. No response stubs, simulated faults, or browser UI were used.
+Failures below were real duplicate-create rejections from Gitea.
+
+| Scenario | Observed live result |
+| --- | --- |
+| Mixed raw PDF, derivative upsert, as-is WebP, and existing content | Media POSTs returned 201 in their input order, then content PUT returned 200; byte-identical media and correct JSON verified through the contents API; one success signal |
+| Re-derive existing derivative | GET resolved SHA, PUT returned 200, stored bytes and SHA changed; one success signal |
+| Duplicate raw PDF before existing page update | Media POST returned 422; no content write, existing content SHA/bytes unchanged, no success signal |
+| Duplicate as-is WebP before new page create | Media POST returned 422; no content write, new page remained absent, no success signal |
+| Later failure after an early raw create | Early POST returned 201 and remained persisted; later duplicate returned 422; referencing content remained absent, no success signal |
+| Naive retry of that partial batch | First POST now returned 422 because the early file existed; content remained absent, no success signal |
+| Slash-prefixed nested media path | Media and content POSTs returned 201 in the correct order; canonical media bytes verified |
+
+Provider source SHA-256:
+`786ec2a49e9c49d7335a2e9ae7ef84a661eed625d99358c37176144637e43c61`.
+The reusable harness and redacted method/path/status ledger are retained in
+GiteaPlenti at `docs/upstream/live-smoke/live-smoke-gitea-current.mjs` and
+`docs/upstream/live-smoke/2026-09-13/gitea-results.json`.
+
+This upgrades the new ordering from mocked-HTTP contract proof to **live-server
+provider proof at the named commit**. It does not prove browser login/upload UI,
+canvas behavior, custom API-base overrides, GitLab at current HEAD, or atomic
+Gitea rollback. The partial-write/retry limitation was confirmed, not removed.
+The normal five suites remain 175 checks; these 26 live assertions are reported
+separately rather than folded into that count.

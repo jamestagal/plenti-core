@@ -212,3 +212,11 @@ suite reports 22 passes / 6 failures and the provider suite 24 passes / 4 failur
 Browser checks used a disposable fixture without timing controls or provider
 stubs. Gitea's new ordering is contract-tested only; no fresh live Gitea/GitLab run
 is claimed. Historical live results remain explicitly scoped in `364-remote-smoke.md`.
+
+**Later live evidence (2026-09-13):** the actual Gitea provider at `60e1885` passed
+26 additional assertions against a fresh Gitea 1.26.4 localhost server, using a
+non-admin user and real HTTP. Mixed create/upsert media ordering, update semantics,
+raw/as-is duplicate failures before content, partial writes, naive retry conflicts,
+and slash-prefixed media paths were verified. The Gitea ordering rows above now
+also have **live-server provider evidence**, as detailed in `364-remote-smoke.md`
+§C. This is not browser UI evidence; GitLab's live evidence remains the July run.
