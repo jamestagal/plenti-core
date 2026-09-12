@@ -74,6 +74,7 @@
     let currentItem = null;   // the queue item this view is presenting
     let destroyed = false;
     let mounted = false;
+    let fieldUploadRequest = 0;
 
     // FIELD mode only — standalone URLs belong to the queue's lifecycle.
     function revokeCropUrl() {
@@ -317,13 +318,17 @@
     // path (original bytes + name, 'create'). The field's own selection logic
     // still applies its schema — a crop-configured field opens its placement
     // crop on the returned path exactly as for a Library pick.
-    async function routeFieldImage(file) {
+    async function routeFieldImage(file, request) {
+        const context = uploadContext;
         const url = URL.createObjectURL(file);
         let conforms = false;
         try {
             conforms = conformsToLibraryDefaults(await loadProbeImage(url), file.name);
         } catch (_) { /* unreadable → the modal surfaces the load error */ }
         URL.revokeObjectURL(url);
+        // The picker can close, change owners, or accept another file while
+        // decoding. A stale probe must neither stage bytes nor hand off a path.
+        if (destroyed || uploadContext !== context || request !== fieldUploadRequest) return;
         if (conforms) passthroughFieldFile(file);
         else optimiseLibraryFile(file);
     }
@@ -344,11 +349,12 @@
         const list = Array.from(files || []);
         if (!list.length) return;
         if (isFieldUpload) {
+            const request = ++fieldUploadRequest;
             const file = list[0];
             // (string concat, not a template literal — Plenti's SSR regex pipeline
             // mishandles user template literals nested in the render output)
             fieldNote = list.length > 1 ? 'Only one file can be used here — using ' + file.name + '.' : '';
-            if (classifyFile(file) === 'image') void routeFieldImage(file);
+            if (classifyFile(file) === 'image') void routeFieldImage(file, request);
             else passthroughFieldFile(file);
             return;
         }

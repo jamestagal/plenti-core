@@ -1,4 +1,5 @@
 <script>
+    import { onDestroy } from 'svelte';
     import { isImagePath, isDocPath } from '../media_checker.js';
     import { parseImageOptions, transformImage } from '../crop-engine.js';
     import { conformsToImageOptions } from '../crop-engine.js';
@@ -79,12 +80,19 @@
     // field===originalMedia guard and captured the NEXT pick made for a
     // DIFFERENT field (its crop modal opened on top of the real one).
     let lastHandled;
+    let selectionRequest = 0;
+    let destroyed = false;
+    onDestroy(() => { destroyed = true; selectionRequest++; revokeCropUrl(); });
     $: if (changingMedia && uploadContext === myPickContext && field === originalMedia
             && changingMedia !== fieldSrc && changingMedia !== lastHandled) {
         lastHandled = changingMedia;
         handleNewSelection(changingMedia);
     }
     async function handleNewSelection(newPath) {
+        if (destroyed) return;
+        const request = ++selectionRequest;
+        processing = false;
+        cropError = '';
         const recrop = pendingMedia.sourceOf(newPath) ?? newPath;
         // A just-staged (deferred) asset isn't served from media/ yet — LOAD it
         // from its in-memory preview; the PATH stays the persisted identity.
@@ -97,9 +105,11 @@
         try {
             probe = await loadImage(loadUrl);
         } catch (error) {
+            if (request !== selectionRequest) return;
             cropError = error instanceof Error ? error.message : 'The selected image could not be loaded.';
             return;
         }
+        if (request !== selectionRequest) return;
         // Maintainer-confirmed short-circuit (#364): an asset that already meets
         // this field's spec is referenced directly — no derivative copy.
         if (conformsToImageOptions(
@@ -114,7 +124,7 @@
             setFieldSrc(newPath);                  // candidate; modal enforces the crop
             openCropFor(loadUrl, newPath, recrop, null);
         } else {
-            optimiseToField(loadUrl, newPath, recrop, null, probe);
+            optimiseToField(loadUrl, newPath, recrop, null, probe, request);
         }
     }
 
@@ -157,22 +167,25 @@
     // crop:false automatic optimisation (contain/convert), no modal. Keeps the
     // previous field value untouched if the transform fails. `preloaded` skips a
     // second decode when the caller already probed the image (conformance check).
-    async function optimiseToField(loadUrl, namePath, recrop, objectUrl, preloaded) {
+    async function optimiseToField(loadUrl, namePath, recrop, objectUrl, preloaded, request) {
         if (processing) return;
         const previous = field;
         processing = true;
         cropError = '';
         try {
             const image = preloaded ?? await loadImage(loadUrl);
+            if (request !== selectionRequest) return;
             const result = await transformImage(image, null, imageOptions, namePath);
+            if (request !== selectionRequest) return;
             pendingMedia.add(result.filePath, result.blob, recrop ?? result.filePath);
             setFieldSrc(result.filePath);
         } catch (error) {
+            if (request !== selectionRequest) return;
             field = previous;
             cropError = error instanceof Error ? error.message : 'The image could not be processed.';
         } finally {
             if (objectUrl) URL.revokeObjectURL(objectUrl);
-            processing = false;
+            if (request === selectionRequest) processing = false;
         }
     }
 
@@ -195,6 +208,10 @@
     let originalMedia;
     let myPickContext = null;   // this instance's claim on the open picker
     const swapMedia = () => {
+        // Opening another picker abandons any selection still being decoded.
+        selectionRequest++;
+        processing = false;
+        lastHandled = undefined;
         originalMedia = field;
         // Open the Media picker with this field's context. A fresh upload flows
         // through the gateway and comes back via onSavedPath; a Library pick
