@@ -143,6 +143,44 @@ temporary copied fixture: real Image decoding, manually held/released onload.
 Screenshots, control script, and reproduction details are retained in the
 GiteaPlenti tracking repository under `docs/upstream/364-slice7-fixes-evidence/`.
 
-**Still open:** Group 3 (deleted assets re-added from committed pending entries),
-the separate local create-conflict backend fix, and the parked #360 native PDF
-interaction redesign. These are not covered by the pass claims above.
+**Open at that checkpoint:** Group 3 (resolved below), the separate local
+create-conflict backend fix, and the parked #360 native PDF interaction redesign.
+
+## Slice 7 review follow-up — Group 3 (2026-09-12)
+
+The Library's success-only deletion callback now removes matching **committed**
+entries from `pendingMedia`, using canonical path comparison for bare and
+slash-prefixed paths. This revokes the deleted asset's preview and prevents
+`admin_menu` from appending it again. An uncommitted replacement is retained for
+its next page save. There is no append-once ledger to suppress a legitimate
+delete-then-re-save of the same path.
+
+The shared harness now also runs the actual Library deletion handler and parent
+Library-list reconciliation with fixture-generated media/configuration inputs.
+Its explicit binding handoff remains synthetic, not a Svelte scheduler simulation.
+
+| Dedicated regression behavior | Synthetic result | Fresh browser evidence |
+| --- | --- | --- |
+| Successfully deleted saved upload stays absent | Pass | Ordinary browser: homepage upload/save/delete; zero matching tiles, file absent, field src released from blob to canonical path |
+| Slash-prefixed Library path retires bare pending path | Pass | Not separately exercised |
+| Save → delete → save same path appends once | Pass | Ordinary browser: same session, same filename, one tile after second save and byte-identical file on disk |
+| Unrelated later save cannot resurrect deleted path | Pass | Not separately exercised |
+| Selection without successful delete completion retains saved preview | Pass | No provider-failure injection; harness does not invoke the success callback |
+| Deleting persisted file preserves an unsaved replacement | Pass | Not separately exercised |
+
+All **163 tests** pass (43 engine + 12 gateway + 64 queue + 22 providers + 22
+transitions), plus `go build ./...` and a fresh fixture build. Against pre-Group-3
+`f699537`, the completed transition harness reports **18 passes and 4 failures**:
+deletion, slash normalization, delete/re-save, and unrelated-save resurrection.
+
+Browser fixture note: providers redirect to `/` after deletion. A first test from
+`/croptest` changed the edited filepath and could clear pending state, so it was
+**not counted** as resurrection proof. The verified run added a media field to the
+temporary fixture's homepage; deletion left both URL and edited filepath unchanged.
+No reload occurred during the verified save/delete/re-save cycle. Source, baseline
+output, and screenshots are recorded in GiteaPlenti under
+`docs/upstream/364-slice7-group3-evidence/`.
+
+The separate local create-conflict defect remains **unfixed and disclosed**.
+Native PDF-focus selection remains unverified; the parked #360 redesign remains
+separate. Neither is claimed fixed by Group 3.

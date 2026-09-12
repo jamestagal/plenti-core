@@ -21,13 +21,16 @@ export const { pendingMedia } = await import(pendingURL);
 const modules = {
     'crop-engine.js': await import(engineURL),
     'pending_media.js': { pendingMedia },
+    'preview_patcher.js': await import(await moduleURL('preview_patcher.js', {
+        "'./pending_media.js'": JSON.stringify(pendingURL),
+    })),
     'media_checker.js': await import(await moduleURL('media_checker.js')),
     'upload_context.js': await import(await moduleURL('upload_context.js')),
     'upload_queue.js': await import(await moduleURL('upload_queue.js')),
     'library_optimise.js': await import(await moduleURL('library_optimise.js')),
 };
 
-export async function component(file, props, bridge) {
+export async function component(file, props, bridge, fixtures = {}) {
     const source = await readFile(new URL(file, cms), 'utf8');
     const nodes = parse(source).instance.content.body;
     const bindings = {}, declarations = [], reactive = [], implicit = new Set();
@@ -40,11 +43,13 @@ export async function component(file, props, bridge) {
     for (const node of nodes) {
         if (node.type === 'ImportDeclaration') {
             const name = node.source.value.split('/').pop();
-            const module = node.source.value === 'svelte' ? hooks : modules[name];
+            const module = fixtures[node.source.value]
+                ?? (node.source.value === 'svelte' ? hooks : modules[name]);
             for (const specifier of node.specifiers) {
                 if (name.endsWith('.svelte')) bindings[specifier.local.name] = null;
                 else {
-                    const value = module?.[specifier.imported?.name];
+                    const value = module?.[specifier.type === 'ImportDefaultSpecifier'
+                        ? 'default' : specifier.imported?.name];
                     if (value === undefined) throw new Error('Unmapped import: ' + specifier.local.name);
                     bindings[specifier.local.name] = value;
                 }

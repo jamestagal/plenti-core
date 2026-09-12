@@ -346,4 +346,14 @@ from the current canonical source, so a new selection replaces the old record an
 both store removal and teardown restore the current source. PDF tiles keep a
 separate canonical path for selection even when their `src` is a blob preview.
 See the acceptance matrix's review-follow-up section for synthetic and instrumented
-browser evidence. Library deletion resurrection remains a separate Group 3 follow-up.
+browser evidence. Library deletion resurrection was left for Group 3 below.
+
+**Review follow-up (2026-09-12, Group 3).** A successful Library deletion retires
+the matching committed pending-media entry and its preview URL before updating
+the Library list. This prevents the retained entry from being appended again.
+Unsaved replacements remain staged, and a later save of the same path can append
+normally. This uses the existing deletion-success boundary rather than a permanent
+append-once ledger; failures do not invoke retirement. The acceptance matrix
+records synthetic tests and ordinary browser proof of save/delete/re-save on an
+unchanged homepage filepath. The local create-collision backend defect is still
+unfixed and disclosed, outside this contribution's scope.

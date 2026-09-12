@@ -218,5 +218,103 @@ await test('PDF blur selection returns its canonical tile path, not its preview 
     } finally { globalThis.window = originalWindow; globalThis.focus = originalFocus; }
 });
 
+const librarySession = async (baseurl = '/') => {
+    const admin = await component('admin_menu.svelte', {}, `
+        read() { flush(); return [...media]; },
+        libraryChanged(next) { media = next; flush(); }
+    `, {
+        '../../generated/media.js': { default: ['media/existing.webp'] },
+        '../../generated/env.js': { env: { baseurl } },
+    });
+    const library = await component('media_browser.svelte', {
+        media: admin.read(), changingMedia: '', showMediaModal: true,
+    }, `
+        select(paths) { selectedMedia = paths; flush(); },
+        completeDelete() { removeMedia(); flush(); },
+        read() { return [...media]; }
+    `);
+    return {
+        read: () => admin.read(),
+        select(paths) { library.set({ media: admin.read() }); library.select(paths); },
+        completeDelete() {
+            library.completeDelete();
+            // The media_browser -> media_modal -> admin_menu bind:media handoff.
+            admin.libraryChanged(library.read());
+        },
+    };
+};
+
+await test('successfully deleted saved upload stays absent from the session Library', async () => {
+    const library = await librarySession();
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['media/existing.webp', 'media/new.webp']);
+    library.select(['media/new.webp']);
+    library.completeDelete();
+    assert.deepEqual(library.read(), ['media/existing.webp']);
+});
+
+await test('deleting a slash-prefixed Library path retires its canonical preview', async () => {
+    const library = await librarySession('');
+    pendingMedia.add('media/new.webp', new Blob(['new']), 'media/new.webp');
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['/media/existing.webp', '/media/new.webp']);
+    library.select(['/media/new.webp']);
+    library.completeDelete();
+    assert.deepEqual(library.read(), ['/media/existing.webp']);
+    assert.equal(pendingMedia.previewUrl('media/new.webp'), null);
+});
+
+await test('save then delete then save the same path appends the new asset once', async () => {
+    const library = await librarySession();
+    const file = 'media/reused.webp';
+    pendingMedia.add(file, new Blob(['first']), file);
+    pendingMedia.markCommitted();
+    library.select([file]); library.completeDelete();
+    assert.deepEqual(library.read(), ['media/existing.webp']);
+    assert.equal(pendingMedia.previewUrl(file), null);
+    pendingMedia.add(file, new Blob(['replacement']), file);
+    assert.deepEqual(library.read(), ['media/existing.webp']);
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['media/existing.webp', file]);
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['media/existing.webp', file]);
+});
+
+await test('an unrelated later page save cannot resurrect a deleted path', async () => {
+    const library = await librarySession();
+    pendingMedia.add('media/deleted.webp', new Blob(['deleted']), 'media/deleted.webp');
+    pendingMedia.markCommitted();
+    library.select(['media/deleted.webp']); library.completeDelete();
+    pendingMedia.add('media/later.webp', new Blob(['later']), 'media/later.webp');
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['media/existing.webp', 'media/later.webp']);
+});
+
+await test('selecting for deletion without provider success preserves the saved preview', async () => {
+    const library = await librarySession();
+    pendingMedia.add('media/keep.webp', new Blob(['keep']), 'media/keep.webp');
+    pendingMedia.markCommitted();
+    const preview = pendingMedia.previewUrl('media/keep.webp');
+    library.select(['media/keep.webp']);
+    // A cancelled/failed delete never invokes the success-only completion hook.
+    assert.deepEqual(library.read(), ['media/existing.webp', 'media/keep.webp']);
+    assert.equal(pendingMedia.previewUrl('media/keep.webp'), preview);
+});
+
+await test('deleting the persisted path preserves an unsaved replacement for the next save', async () => {
+    const library = await librarySession();
+    const file = 'media/replacement.webp';
+    pendingMedia.add(file, new Blob(['saved']), file); pendingMedia.markCommitted();
+    assert.ok(library.read().includes(file));
+    pendingMedia.add(file, new Blob(['unsaved edit']), file);
+    const preview = pendingMedia.previewUrl(file);
+    library.select([file]); library.completeDelete();
+    assert.deepEqual(library.read(), ['media/existing.webp']);
+    assert.equal(pendingMedia.previewUrl(file), preview);
+    pendingMedia.markCommitted();
+    assert.deepEqual(library.read(), ['media/existing.webp', file]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;
