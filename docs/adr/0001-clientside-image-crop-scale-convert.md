@@ -281,10 +281,13 @@ corrections, all verified in the browser matrix:
 
 ---
 
-**D13 — The maintainer-confirmed model (closes the D12 Stage-2 gate).** Jim answered the
-schema/architecture question on #364 (comment thread, 2026-07-03) and confirmed the UX
-consequence; the "Stage 2" placeholder semantics are superseded by this confirmed model,
-implemented on this branch:
+**D13 — Field model from the maintainer discussion (supersedes the D12 Stage-2
+placeholder).** Jim answered the schema/architecture question on #364 (comment
+thread, 2026-07-03). The processing/deferral model below follows that discussion.
+The Crop-only controls are the author's follow-up proposal, adopted for this
+implementation; no separate maintainer reply approving that UI detail is visible
+in the public thread checked on 2026-09-13. This records the implementation
+decision, not evidence of an additional public approval.
 
 - **Selection into a schema-configured field auto-processes** (his choice — the D10 semantics
   Stage 1 preserved turn out to be the confirmed direction), with a NEW **conformance
@@ -301,7 +304,7 @@ implemented on this branch:
   local dev endpoint still overwrites, tracked as a separate backend fix).
   **Standalone Media-Library uploads keep the explicit eager "Save Media" batch**
   (no page-save moment exists there) — D12's eager-save scope narrows to exactly that surface.
-- **Field UX (confirmed)**: automatic `scale`/`convert` is silent — deterministic, applied on
+- **Field UX (implemented proposal)**: automatic `scale`/`convert` is silent — deterministic, applied on
   selection, conformance-skipped — so there is **no Optimise button**. Crop-configured fields
   expose one explicit **Crop** action beside Change Media in a split hover overlay (the
   original prototype's visual, rebuilt); ordinary and `crop:false` fields show Change Media
