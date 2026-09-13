@@ -1,5 +1,6 @@
 <script>
     import { onMount } from 'svelte';
+    import { pendingMedia } from './pending_media.js';
     import { isImage, isDoc } from './media_checker.js';
     export let files, changingMedia, showMediaModal;
     export let selectedMedia = [];
@@ -44,9 +45,9 @@
     {#each files as file, i}
         <div class="media{selectedMedia.includes(file) ? ' selected' : ''}" on:click={selectMedia(file)}>
             {#if isDoc(file)}
-                <embed src="{file}" data-plenti-media-path={file} type="application/pdf" />
+                <embed src={($pendingMedia, pendingMedia.previewUrl(file)) || file} data-plenti-media-path={file} type="application/pdf" />
             {:else if isImage(file)}
-                <img src={file} />
+                <img src={($pendingMedia, pendingMedia.previewUrl(file)) || file} />
             {/if}
             <div class="filename">{file.split("/").pop()}</div>
             <button 

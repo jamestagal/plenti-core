@@ -1,5 +1,5 @@
 <script>
-    import { onDestroy } from 'svelte';
+    import { onDestroy, tick } from 'svelte';
     import { isImagePath, isDocPath } from '../media_checker.js';
     import { parseImageOptions, transformImage } from '../crop-engine.js';
     import { conformsToImageOptions } from '../crop-engine.js';
@@ -96,6 +96,11 @@
         // from its in-memory preview; the PATH stays the persisted identity.
         const loadUrl = pendingMedia.previewUrl(newPath) ?? newPath;
         if (!imageOptions || !isImagePath(newPath)) {
+            // A Library pick runs inside a reactive flush, after fieldSrc was
+            // computed. Resume in the next flush so indirect field assignment
+            // also invalidates the thumbnail (direct uploads run outside it).
+            await tick();
+            if (destroyed || request !== selectionRequest) return;
             setFieldSrc(newPath);                  // ordinary field / non-image
             return;
         }

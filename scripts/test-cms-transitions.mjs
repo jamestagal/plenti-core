@@ -3,7 +3,7 @@
 // Synthetic component-transition evidence; see the harness's scope note.
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { component, controlledImages, pendingMedia, settle, previewPage } from './helpers/cms-transition-harness.mjs';
+import { component, controlledImages, pendingMedia, settle, previewPage, scheduledMedia } from './helpers/cms-transition-harness.mjs';
 
 let passed = 0, failed = 0;
 async function test(name, run) {
@@ -365,7 +365,8 @@ for (const editorType of ['Code', 'Visual']) await test(editorType + ' Save supp
     const extras = await save.beforeSubmit?.() ?? [];
     assert.deepEqual(extras, [{ file: 'media/new.webp', action: 'create', encoding: 'base64', contents: 'data:image/webp;base64,cGl4ZWxz' }]);
     assert.equal(JSON.parse(save.commitList[0].contents).image, 'media/new.webp');
-    assert.equal((await pendingMedia.toCommitItems()).length, 1);
+    let entries; pendingMedia.subscribe(value => entries = value)();
+    assert.equal(entries.filter(i => !i.committed).length, 1);
     save.afterSubmit();
     assert.deepEqual(await pendingMedia.toCommitItems(), []);
     assert.ok(pendingMedia.previewUrl('media/new.webp'));
@@ -395,6 +396,64 @@ await test('Code/Visual and View/Edit transitions keep the same page session', a
     const thirdVisual = await visualForPage(content);
     assert.equal(pendingMedia.previewUrl('media/new.webp'), preview);
     thirdVisual.destroy(); admin.destroy();
+});
+
+await test('Library selection updates thumbnail under the real Svelte scheduler', async () => {
+    const field = await scheduledMedia({ field: 'media/original.webp', localMediaList: [],
+        changingMedia: '', uploadContext: { kind: 'standalone' }, schema: null });
+    try {
+        field.testPick('media/new.webp');
+        await settle();
+        assert.deepEqual(field.testRead(), { field: 'media/new.webp',
+            fieldSrc: 'media/new.webp', displaySrc: 'media/new.webp' });
+    } finally { field.$destroy(); }
+});
+
+await test('standalone save retains a committed preview before queue teardown', async () => {
+    const view = await component('file_upload.svelte', {
+        media: [], localMediaList: [{ file: 'media/new.webp', contents: 'data:image/webp;base64,cGl4ZWxz' }],
+        mediaPrefix: '', uploadContext: { kind: 'standalone' },
+    }, 'saved: addUploadsToLibrary');
+    view.saved();
+    assert.ok(pendingMedia.previewUrl('media/new.webp'));
+    assert.deepEqual(await pendingMedia.toCommitItems(), []);
+    view.destroy();
+    assert.ok(pendingMedia.previewUrl('media/new.webp'));
+});
+
+await test('standalone preview preserves unrelated unsaved page media', async () => {
+    pendingMedia.add('media/pending.webp', new Blob(['pending']), 'media/source.webp');
+    pendingMedia.rememberSaved('media/saved.webp', 'data:image/webp;base64,cGl4ZWxz');
+    let entries; pendingMedia.subscribe(value => entries = value)();
+    assert.deepEqual(entries.filter(i => !i.committed).map(i => i.file), ['media/pending.webp']);
+    const saved = entries.find(i => i.file === 'media/saved.webp');
+    assert.equal(await saved.blob.text(), 'pixels');
+    assert.equal(saved.blob.type, 'image/webp');
+});
+
+await test('standalone preview cannot replace a newer unsaved version of the same path', async () => {
+    pendingMedia.add('media/same.webp', new Blob(['newer']), 'media/source.webp');
+    const preview = pendingMedia.previewUrl('media/same.webp');
+    pendingMedia.rememberSaved('media/same.webp', 'data:image/webp;base64,b2xkZXI=');
+    assert.equal(pendingMedia.previewUrl('media/same.webp'), preview);
+    let entries; pendingMedia.subscribe(value => entries = value)();
+    assert.equal(entries.filter(i => !i.committed).length, 1);
+});
+
+await test('plain object media keeps metadata while its scheduled thumbnail changes', async () => {
+    const field = await scheduledMedia({ field: { src: 'media/original.webp', alt: 'kept' },
+        localMediaList: [], changingMedia: '', uploadContext: { kind: 'standalone' }, schema: null });
+    try {
+        field.testPick('media/new.webp'); await settle();
+        assert.deepEqual(field.testRead(), { field: { src: 'media/new.webp', alt: 'kept' },
+            fieldSrc: 'media/new.webp', displaySrc: 'media/new.webp' });
+    } finally { field.$destroy(); }
+});
+
+await test('plain selection cancelled during tick cannot mutate the destroyed field', async () => {
+    const field = await mediaField({ schema: null });
+    field.pick('media/new.webp'); field.destroy(); await settle();
+    assert.equal(field.read().field, 'media/original.webp');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

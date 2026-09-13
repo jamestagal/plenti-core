@@ -56,6 +56,7 @@ export async function component(file, props, bridge, fixtures = {}) {
     const bindings = {}, declarations = [], reactive = [], implicit = new Set();
     const exported = [], mounts = [], destroys = [], events = [];
     const hooks = {
+        tick: () => Promise.resolve(),
         onMount: fn => mounts.push(fn),
         onDestroy: fn => destroys.push(fn),
         createEventDispatcher: () => (type, detail) => events.push({ type, detail }),
@@ -178,4 +179,35 @@ export async function previewPage() {
             globalThis.MutationObserver = originalObserver;
         },
     };
+}
+
+// Actual bundled Svelte scheduler, with DOM rendering deliberately omitted.
+// Unlike component(), this preserves compiler dependency order and dirty bits.
+export async function scheduledMedia(props) {
+    const { compile } = createRequire(import.meta.url)('../../defaults/node_modules/svelte/compiler.js');
+    let source = await readFile(new URL('fields/media.svelte', cms), 'utf8');
+    source = source.replace('</script>', `
+        export function testPick(path) { swapMedia(); changingMedia = path; }
+        export function testRead() { return { field, fieldSrc, displaySrc }; }
+    </script>`);
+    let code = compile(source, { generate: 'dom' }).js.code;
+    const internal = await import(new URL('../../defaults/node_modules/svelte/internal/index.mjs', import.meta.url));
+    const bindings = {};
+    code = code.replace(/import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"];?/g, (_, names, path) => {
+        const module = path === 'svelte/internal' || path === 'svelte' ? internal : modules[path.split('/').pop()];
+        if (names.trim().startsWith('{')) {
+            for (const name of names.replace(/[{}]/g, '').split(',').map(s => s.trim()).filter(Boolean)) {
+                const [original, alias] = name.split(/\s+as\s+/);
+                bindings[alias || original] = module[original];
+            }
+        } else bindings[names.trim()] = null;
+        return '';
+    });
+    code = code.replace(/instance,\s*create_fragment,/, 'instance, null,');
+    code = code.replace(/\n\s*add_css,/, '\nnull,');
+    code = code.replace('export default Component;', 'return Component;');
+    const Component = new Function(...Object.keys(bindings), code)(...Object.values(bindings));
+    internal.set_current_component({ $$: { root: {}, context: new Map() } });
+    try { return new Component({ props, context: new Map() }); }
+    finally { internal.set_current_component(null); }
 }

@@ -424,6 +424,7 @@
     // UNIVERSAL fix: every saved item enters the library as its PERSISTED PATH
     // (item.file), never its transport data URL (item.contents). Dedupe by path.
     const addUploadsToLibrary = () => {
+        localMediaList.forEach(item => pendingMedia.rememberSaved(item.file, item.contents));
         const savedPaths = localMediaList.map(item => item.file).filter(Boolean);
         media = [...new Set([...media, ...savedPaths])];
     }

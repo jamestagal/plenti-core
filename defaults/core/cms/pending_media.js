@@ -46,6 +46,22 @@ function createPendingMedia() {
                 ];
             });
         },
+        // Standalone uploads already persisted. Retain their own preview before
+        // the upload queue is torn down; never mark unrelated page edits saved.
+        rememberSaved(file, contents) {
+            const comma = contents.indexOf(',');
+            const mime = contents.slice(5, contents.indexOf(';'));
+            const bytes = Uint8Array.from(atob(contents.slice(comma + 1)), c => c.charCodeAt(0));
+            const blob = new Blob([bytes], { type: mime });
+            update(list => {
+                const existing = list.find(i => i.file === file);
+                // A page may hold a newer, unsaved replacement at this path.
+                if (existing && !existing.committed) return list;
+                revoke(existing);
+                return [...list.filter(i => i.file !== file),
+                    { file, blob, sourcePath: file, url: URL.createObjectURL(blob), committed: true }];
+            });
+        },
         remove(file) {
             update(list => {
                 const item = list.find(i => i.file === file);
