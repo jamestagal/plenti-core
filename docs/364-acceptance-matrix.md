@@ -220,3 +220,28 @@ raw/as-is duplicate failures before content, partial writes, naive retry conflic
 and slash-prefixed media paths were verified. The Gitea ordering rows above now
 also have **live-server provider evidence**, as detailed in `364-remote-smoke.md`
 §C. This is not browser UI evidence; GitLab's live evidence remains the July run.
+
+## Library-first preview corrections (2026-09-13)
+
+Production fix: `6551044`. Both owner-reported symptoms reproduced with
+`tradie-5.jpg` on pre-fix `b86caac` in a disposable local fixture.
+
+| Check | Evidence |
+| --- | --- |
+| Successful standalone upload keeps a decoded Library thumbnail after queue cleanup | Ordinary browser, 1500×1000 blob preview without reload; synthetic committed-preview retention test |
+| Picking from Library updates plain_image before and after Save | Ordinary browser, same decoded preview throughout; actual bundled Svelte scheduler regression fails before fix |
+| Object media selection preserves metadata | Synthetic scheduler regression |
+| Destroying a field during the deferred selection prevents late mutation | Synthetic handler regression |
+| Standalone save leaves unrelated and same-path unsaved page edits pending | Synthetic store regressions |
+
+181 checks pass: engine 43, optimise 12, queue 64, provider 28, transitions 34.
+The scheduler helper uses the real compiler/runtime but omits DOM rendering;
+it complements rather than replaces the ordinary browser run. Screenshots and
+raw readings are recorded in GiteaPlenti's
+`docs/upstream/364-library-preview-2026-09-13/`.
+
+The counted run restarted from a fresh fixture after an app restart; no reload
+occurred between upload and page Save. Existing uncached Library tiles can still
+fail during local public-directory rebuilding. This correction protects new
+upload previews and fixes stale field selection; it does not claim to eliminate
+the broader local-server availability race. Remote browser UI was not re-tested.
