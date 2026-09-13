@@ -307,9 +307,10 @@ decision, not evidence of an additional public approval.
   (no page-save moment exists there) — D12's eager-save scope narrows to exactly that surface.
 - **Field UX (implemented proposal)**: automatic `scale`/`convert` is silent — deterministic, applied on
   selection, conformance-skipped — so there is **no Optimise button**. Crop-configured fields
-  expose one explicit **Crop** action beside Change Media in a split hover overlay (the
+  expose one explicit **Edit crop** action beside Change Media in a split hover overlay (the
   original prototype's visual, rebuilt); ordinary and `crop:false` fields show Change Media
-  only.
+  only. The owner-selected label "Edit crop" is consistent before and after a
+  crop/save/reload; it does not infer persistent crop history from session metadata.
 - **Ingestion conformance (owner-confirmed, 2026-07-12)** — the field-selection short-circuit's
   principle extended to the gateway itself: an upload already meeting the library defaults
   (target format + within the max edge) is added **as-is** — original bytes, original name (the
