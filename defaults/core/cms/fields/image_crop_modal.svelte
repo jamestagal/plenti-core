@@ -10,6 +10,8 @@
     export let imageUrl;
     export let options = {};
     export let error = '';
+    // Display-only failures elsewhere in the batch; removal belongs to the queue.
+    export let batchFailures = [];
     export let processing = false;
     // Library-gateway mode: shows the optimise preview by default with an OPTIONAL
     // "Crop image" toggle (standalone only — field-launched keeps allowCropToggle
@@ -181,6 +183,16 @@
         <p class="hint">{doCrop ? 'Drag to pan • scroll or buttons to zoom'
             : (conforming ? 'Already optimised — will be added unchanged' : 'Preview of the optimised output')}</p>
 
+        {#if batchFailures.length}
+            <div class="batch-warning" role="status">
+                <strong>{batchFailures.length} file{batchFailures.length === 1 ? '' : 's'} could not be processed.</strong>
+                <ul>{#each batchFailures as failure}
+                    <li>{failure.name}: {failure.message}</li>
+                {/each}</ul>
+                <p>Finish or skip this image, then remove failed files before saving.</p>
+            </div>
+        {/if}
+
         {#if allowCropToggle}
             <label class="crop-toggle">
                 <input type="checkbox" bind:checked={wantCrop} />
@@ -251,6 +263,9 @@
         border-radius: 8px;
         padding: 20px;
         max-width: 90vw;
+        max-height: calc(100vh - 40px);
+        overflow-y: auto;
+        box-sizing: border-box;
         box-shadow: 0 10px 40px rgba(0, 0, 0, .3);
         text-align: center;
     }
@@ -282,6 +297,9 @@
     .zoom button { width: 32px; height: 32px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
     .zoom .reset { width: auto; padding: 0 12px; }
     .zoom span { min-width: 48px; }
+    .batch-warning { background: #fff8e1; border: 1px solid #f0e0a0; border-radius: 4px; color: #7a6000; padding: 10px; margin-bottom: 12px; font-size: .85rem; text-align: left; overflow-wrap: anywhere; }
+    .batch-warning ul { padding-left: 20px; margin: 6px 0; max-height: 100px; overflow-y: auto; }
+    .batch-warning p { margin: 6px 0 0; }
     .err { color: darkred; margin: 8px 0; font-size: .85rem; }
     .actions { display: flex; gap: 10px; margin-top: 14px; }
     .actions button { flex: 1; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }

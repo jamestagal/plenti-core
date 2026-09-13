@@ -431,7 +431,7 @@
 </script>
 
 <div class="upload-wrapper">
-    {#if queue && (pendingReviewCount > 0 || failedItems.length > 0)}
+    {#if !showCropModal && queue && (pendingReviewCount > 0 || failedItems.length > 0)}
         <div class="queue-status">
             {#if pendingReviewCount > 0}
                 <div>{pendingReviewCount} file{pendingReviewCount === 1 ? '' : 's'} still to review — finish or skip them before saving.</div>
@@ -528,6 +528,9 @@
             queuePosition={queuePosition}
             cancelLabel={queue ? 'Skip this file' : 'Cancel'}
             showCancelAll={!!queue && remainingSkippable > 1}
+            batchFailures={failedItems.map(f => ({ name: f.file.name,
+                message: f.error instanceof Error ? f.error.message
+                    : String(f.error || 'could not be processed') }))}
             error={cropError || fieldNote}
             {processing}
             on:confirm={onLibraryCropConfirm}
