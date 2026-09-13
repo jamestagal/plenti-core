@@ -245,3 +245,15 @@ occurred between upload and page Save. Existing uncached Library tiles can still
 fail during local public-directory rebuilding. This correction protects new
 upload previews and fixes stale field selection; it does not claim to eliminate
 the broader local-server availability race. Remote browser UI was not re-tested.
+
+## Batch warning visibility (2026-09-13)
+
+`c3f13bc` moves failed-file summaries into the active optimisation dialog and
+hides the redundant background queue banner. A disposable browser test simulated
+one named FileReader failure before a valid image: the failure was visible inside
+the dialog, approving the image left Save blocked, and removing only the failed
+entry enabled a successful save. This is **instrumented browser evidence**.
+After removing the instrumentation and reloading, an ordinary successful upload
+showed neither the failure summary nor background reminder. Screenshots are in
+`docs/images/image-crop/`; detailed evidence is in GiteaPlenti's
+`docs/upstream/364-batch-alert-2026-09-13/`. All 181 existing checks pass.
