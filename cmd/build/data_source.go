@@ -163,7 +163,7 @@ func DataSource(siteConfig readers.SiteConfig) ([]ContentNode, error) {
 			route, routeOverridden = siteConfig.Routes[contentType]
 		}
 		if routeOverridden {
-			node.Path = resolveRoute(route, fields)
+			node.Path = resolveRoute(route, fields, fileName)
 		}
 		if !routeOverridden {
 			// Default path is the file path without the leading type folder
@@ -189,9 +189,10 @@ func DataSource(siteConfig readers.SiteConfig) ([]ContentNode, error) {
 	return allContent, nil
 }
 
-// resolveRoute replaces :fields(...) tokens in a route with slugified field values.
-func resolveRoute(route string, fields map[string]any) string {
-	resolved := route
+// resolveRoute replaces :fields(...) tokens in a route with slugified field
+// values, and :filename with the slugified file name (without .json).
+func resolveRoute(route string, fields map[string]any, fileName string) string {
+	resolved := strings.ReplaceAll(route, ":filename", slugify(fileName))
 	for _, match := range reField.FindAllStringSubmatch(route, -1) {
 		fieldName := match[1]
 		fieldValue := ""
