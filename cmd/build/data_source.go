@@ -177,6 +177,12 @@ func DataSource(siteConfig readers.SiteConfig) ([]ContentNode, error) {
 				node.Path = "/" + fileName
 			}
 		}
+		// A path from content (a field in a route) must stay inside the
+		// build folder: slugify keeps "." and "/", so a title "../../x"
+		// would write the page outside it.
+		if leavesSite(node.Path) {
+			return fmt.Errorf("content file %s gives the path %q, which leads outside the site", relPath, node.Path)
+		}
 
 		allContent = append(allContent, node)
 		return nil
@@ -201,6 +207,16 @@ func resolveRoute(route string, fields map[string]any) string {
 		resolved = strings.Replace(resolved, match[0], slugify(fieldValue), 1)
 	}
 	return resolved
+}
+
+// leavesSite reports whether a page path has a ".." segment.
+func leavesSite(path string) bool {
+	for _, segment := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // slugify creates a url-safe path segment.
