@@ -190,9 +190,15 @@ func DataSource(siteConfig readers.SiteConfig) ([]ContentNode, error) {
 }
 
 // resolveRoute replaces :fields(...) tokens in a route with slugified field
-// values, and :filename with the slugified file name (without .json).
+// values, and :filename with the slugified file name (without .json). A
+// true index (_index.json) has no name of its own, so its :filename is empty
+// and the path is its folder: "/blog/:filename" gives "/blog".
 func resolveRoute(route string, fields map[string]any, fileName string) string {
-	resolved := strings.ReplaceAll(route, ":filename", slugify(fileName))
+	name := slugify(fileName)
+	if fileName == "_index" {
+		name = ""
+	}
+	resolved := strings.ReplaceAll(route, ":filename", name)
 	for _, match := range reField.FindAllStringSubmatch(route, -1) {
 		fieldName := match[1]
 		fieldValue := ""
@@ -200,6 +206,14 @@ func resolveRoute(route string, fields map[string]any, fileName string) string {
 			fieldValue = fmt.Sprintf("%v", val)
 		}
 		resolved = strings.Replace(resolved, match[0], slugify(fieldValue), 1)
+	}
+	if name == "" && strings.Contains(route, ":filename") {
+		for strings.Contains(resolved, "//") {
+			resolved = strings.ReplaceAll(resolved, "//", "/")
+		}
+		if len(resolved) > 1 {
+			resolved = strings.TrimSuffix(resolved, "/")
+		}
 	}
 	return resolved
 }
